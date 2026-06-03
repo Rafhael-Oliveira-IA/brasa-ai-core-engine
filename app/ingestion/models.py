@@ -11,6 +11,7 @@ def utc_now() -> datetime:
 
 
 class ProjectIngestionRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
     project_path: str
     force: bool = False
 
@@ -45,6 +46,7 @@ class IngestionState(BaseModel):
 
 
 class ProjectIngestionReport(BaseModel):
+    workspace_id: str | None = None
     project_name: str
     project_path: str
     output_path: str

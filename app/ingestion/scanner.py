@@ -8,9 +8,11 @@ from app.ingestion.models import ProjectProfile, ScannedFile
 
 DEFAULT_EXTENSIONS = {
     ".py",
+    ".lua",
     ".md",
     ".txt",
     ".json",
+    ".xml",
     ".yaml",
     ".yml",
     ".toml",
@@ -43,6 +45,7 @@ EXCLUDED_DIRS = {
 
 LANGUAGE_BY_EXTENSION = {
     ".py": "python",
+    ".lua": "lua",
     ".ts": "typescript",
     ".tsx": "typescript",
     ".js": "javascript",
@@ -57,6 +60,7 @@ LANGUAGE_BY_EXTENSION = {
     ".h": "c",
     ".md": "markdown",
     ".json": "json",
+    ".xml": "xml",
     ".yaml": "yaml",
     ".yml": "yaml",
     ".toml": "toml",
@@ -88,7 +92,11 @@ class ProjectScanner:
                 continue
 
             stat = file_path.stat()
-            if stat.st_size > self.max_file_bytes:
+            max_allowed_size = self.max_file_bytes
+            if file_path.suffix.lower() in {".xml", ".lua"}:
+                max_allowed_size = max(max_allowed_size, 2_000_000)
+
+            if stat.st_size > max_allowed_size:
                 continue
 
             rel_path = file_path.relative_to(project_path).as_posix()

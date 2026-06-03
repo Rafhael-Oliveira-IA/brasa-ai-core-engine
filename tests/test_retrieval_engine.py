@@ -96,3 +96,52 @@ def test_retrieval_engine_assembles_context_with_scores_and_dependencies() -> No
         assert "scores" in first
         assert "relevance_score" in first["scores"]
         assert 0.0 <= first["scores"]["relevance_score"] <= 1.0
+
+
+def test_retrieval_keeps_oversized_top_candidate_by_truncating() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        artifacts = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+
+        giant_summary = "# actions\n" + ("itemid actionid uniqueid script register\n" * 800)
+        write_json(
+            artifacts / "metadata" / "files" / "data" / "actions" / "actions.meta.json",
+            {
+                "path": "data/actions/actions.xml",
+                "hash": "abc123",
+                "language": "xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "size": len(giant_summary),
+                "module": "data",
+                "folder": "data/actions",
+                "dependencies": ["itemid", "actionid", "uniqueid", "script"],
+                "symbols": ["action"],
+            },
+        )
+        write_text(
+            artifacts / "summaries" / "files" / "data" / "actions" / "actions.summary.md",
+            giant_summary,
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            knowledge_compiler=StubKnowledgeCompiler(),
+            max_chars=600,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id="mmo_workspace::SERVIDOR - ORIGINAL",
+            user_id="u1",
+            prompt="actions.xml itemid actionid uniqueid",
+        )
+
+        packet, retrieval = engine.assemble(envelope)
+
+        assert packet.snippets
+        assert packet.snippets[0].source == "artifact:file:data/actions/actions.xml"
+        assert packet.snippets[0].content.endswith("...")
+        used_chars = retrieval.assembled["compression"]["used_chars"]
+        assert used_chars <= 600

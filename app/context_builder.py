@@ -18,16 +18,19 @@ class ContextBuilder:
         max_chars: int = 3500,
         knowledge_compiler: KnowledgeCompiler | None = None,
         project_artifacts_root: Path | None = None,
+        embedding_client: object | None = None,
     ) -> None:
         self.memory_repository = memory_repository
         self.max_chars = max_chars
         self.knowledge_compiler = knowledge_compiler
         self.project_artifacts_root = project_artifacts_root or (Path(".") / ".brasa" / "projects")
+        self.embedding_client = embedding_client
         self.retrieval_engine = ContextRetrievalEngine(
             memory_repository=self.memory_repository,
             knowledge_compiler=self.knowledge_compiler,
             project_artifacts_root=self.project_artifacts_root,
             max_chars=self.max_chars,
+            embedding_client=self.embedding_client,
         )
 
     def build(self, envelope: RequestEnvelope) -> tuple[ContextPacket, RetrievalResult]:

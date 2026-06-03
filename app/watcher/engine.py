@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.contracts import WatcherCheckReport, WatcherFileEvent
 from app.ingestion.scanner import ProjectScanner
+from app.workspace import normalize_workspace_id
 
 
 class FileSystemWatcherEngine:
@@ -14,14 +15,18 @@ class FileSystemWatcherEngine:
         self.snapshot_root.mkdir(parents=True, exist_ok=True)
         self.scanner = ProjectScanner(max_file_bytes=max_file_bytes)
 
-    def check(self, *, project_path: Path) -> WatcherCheckReport:
+    def check(self, *, project_path: Path, workspace_id: str | None = None) -> WatcherCheckReport:
         project_path = project_path.resolve()
         if not project_path.exists() or not project_path.is_dir():
             raise ValueError(f"project_path not found or not a folder: {project_path}")
 
+        normalized_workspace_id = normalize_workspace_id(workspace_id)
         profile, scanned_files = self.scanner.scan(project_path)
         current = {item.path: item.hash for item in scanned_files}
-        previous = self._load_snapshot(project_name=profile.project_name)
+        previous = self._load_snapshot(
+            project_name=profile.project_name,
+            workspace_id=normalized_workspace_id,
+        )
         previous_files: dict[str, str] = {
             str(path): str(hash_value)
             for path, hash_value in previous.get("files", {}).items()
@@ -107,6 +112,7 @@ class FileSystemWatcherEngine:
             project_name=profile.project_name,
             project_path=project_path,
             files=current,
+            workspace_id=normalized_workspace_id,
         )
 
         total_changes = len(created) + len(modified) + len(deleted) + len(renamed_pairs)
@@ -130,12 +136,13 @@ class FileSystemWatcherEngine:
             notes=notes,
         )
 
-    def _snapshot_path(self, *, project_name: str) -> Path:
+    def _snapshot_path(self, *, project_name: str, workspace_id: str) -> Path:
         safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in project_name)
-        return self.snapshot_root / f"{safe_name}.json"
+        safe_workspace = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in workspace_id)
+        return self.snapshot_root / safe_workspace / f"{safe_name}.json"
 
-    def _load_snapshot(self, *, project_name: str) -> dict:
-        snapshot_path = self._snapshot_path(project_name=project_name)
+    def _load_snapshot(self, *, project_name: str, workspace_id: str) -> dict:
+        snapshot_path = self._snapshot_path(project_name=project_name, workspace_id=workspace_id)
         if not snapshot_path.exists():
             return {}
 
@@ -144,10 +151,19 @@ class FileSystemWatcherEngine:
         except Exception:
             return {}
 
-    def _save_snapshot(self, *, project_name: str, project_path: Path, files: dict[str, str]) -> None:
-        snapshot_path = self._snapshot_path(project_name=project_name)
+    def _save_snapshot(
+        self,
+        *,
+        project_name: str,
+        project_path: Path,
+        files: dict[str, str],
+        workspace_id: str,
+    ) -> None:
+        snapshot_path = self._snapshot_path(project_name=project_name, workspace_id=workspace_id)
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "project_name": project_name,
+            "workspace_id": workspace_id,
             "project_path": project_path.as_posix(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "files": files,

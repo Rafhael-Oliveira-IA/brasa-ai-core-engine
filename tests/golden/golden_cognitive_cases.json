@@ -1,0 +1,87 @@
+{
+  "projects": [
+    {
+      "workspace_id": "mmo_workspace",
+      "project_path": "F:/POKECONTEST/SERVIDOR - ORIGINAL",
+      "max_cases": 24,
+      "file_extensions": [
+        ".lua",
+        ".hpp",
+        ".h",
+        ".cpp",
+        ".ipp",
+        ".xml",
+        ".json",
+        ".sql",
+        ".py"
+      ],
+      "keywords": [
+        "npc",
+        "spells",
+        "shiny",
+        "kanto",
+        "monster",
+        "talkactions",
+        "movements",
+        "quests",
+        "creaturescripts",
+        "pokemon",
+        "pokedex",
+        "npcbattle",
+        "raids",
+        "market",
+        "anticheat",
+        "opcode",
+        "guild",
+        "teleport",
+        "globalevents",
+        "chatchannels",
+        "migrations"
+      ]
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_path": "F:/BRP_GreenFall_v3/BRP_GreenFall_v4/BRP_GreenFall_v4",
+      "max_cases": 24,
+      "file_extensions": [
+        ".cs",
+        ".prefab",
+        ".unity",
+        ".asset",
+        ".mat",
+        ".shadergraph",
+        ".shadersubgraph",
+        ".hlsl",
+        ".asmdef",
+        ".shader",
+        ".uxml",
+        ".uss",
+        ".inputactions"
+      ],
+      "keywords": [
+        "inventory",
+        "wieldables",
+        "fps",
+        "runtime",
+        "editor",
+        "environment",
+        "vegetation",
+        "scenes",
+        "firearms",
+        "pickup",
+        "savesystem",
+        "damage",
+        "vfx",
+        "postprocessing",
+        "shadergraph",
+        "input",
+        "menu",
+        "behaviours",
+        "workstations",
+        "textmesh"
+      ]
+    }
+  ],
+  "min_keyword_hit_ratio": 1.0,
+  "max_file_bytes": 300000
+}

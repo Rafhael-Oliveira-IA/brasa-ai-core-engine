@@ -8,6 +8,7 @@ from app.ingestion.compiler import HierarchicalCompiler
 from app.ingestion.generator import KnowledgeGenerator
 from app.ingestion.models import IngestionState, ProjectIngestionReport
 from app.ingestion.scanner import ProjectScanner
+from app.workspace import normalize_workspace_id
 
 
 class ContextInvalidationEngine:
@@ -39,13 +40,23 @@ class ProjectIngestionPipeline:
         self.compiler = HierarchicalCompiler()
         self.invalidator = ContextInvalidationEngine()
 
-    def run(self, *, project_path: Path, force: bool = False) -> ProjectIngestionReport:
+    def run(
+        self,
+        *,
+        project_path: Path,
+        force: bool = False,
+        workspace_id: str | None = None,
+    ) -> ProjectIngestionReport:
         project_path = project_path.resolve()
         if not project_path.exists() or not project_path.is_dir():
             raise ValueError(f"project_path not found or not a folder: {project_path}")
 
         profile, scanned_files = self.scanner.scan(project_path)
-        output_root = self.output_projects_root / profile.project_name
+        normalized_workspace_id = normalize_workspace_id(workspace_id) if workspace_id else None
+        if normalized_workspace_id:
+            output_root = self.output_projects_root / "workspaces" / normalized_workspace_id / profile.project_name
+        else:
+            output_root = self.output_projects_root / profile.project_name
         folders = self._ensure_output_tree(output_root)
 
         previous_state = self._load_state(folders["metadata"] / "state.json")
@@ -188,6 +199,7 @@ class ProjectIngestionPipeline:
         )
 
         return ProjectIngestionReport(
+            workspace_id=normalized_workspace_id,
             project_name=profile.project_name,
             project_path=project_path.as_posix(),
             output_path=output_root.as_posix(),
@@ -201,7 +213,11 @@ class ProjectIngestionPipeline:
             engine=profile.engine,
             notes=[
                 "Ingestion pipeline completed.",
-                "Artifacts generated under .brasa/projects/<project>/.",
+                (
+                    "Artifacts generated under .brasa/workspaces/<workspace>/<project>/."
+                    if normalized_workspace_id
+                    else "Artifacts generated under .brasa/projects/<project>/."
+                ),
             ],
         )
 

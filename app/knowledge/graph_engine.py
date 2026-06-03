@@ -4,6 +4,8 @@ import json
 from collections import defaultdict, deque
 from pathlib import Path
 
+from app.workspace import resolve_project_root
+
 
 class KnowledgeGraphEngine:
     def __init__(self, *, project_artifacts_root: Path) -> None:
@@ -13,11 +15,12 @@ class KnowledgeGraphEngine:
         self,
         *,
         project_id: str,
+        workspace_id: str | None = None,
         seed_terms: set[str],
         max_depth: int = 2,
         max_nodes: int = 80,
     ) -> dict[str, object]:
-        payload = self._load_graph(project_id)
+        payload = self._load_graph(project_id=project_id, workspace_id=workspace_id)
         dependencies = self._normalized_dependency_map(payload)
         edges = self._normalized_edges(payload)
 
@@ -79,8 +82,13 @@ class KnowledgeGraphEngine:
             "architecture_notes": notes,
         }
 
-    def _load_graph(self, project_id: str) -> dict:
-        graph_path = self.project_artifacts_root / project_id / "graphs" / "dependencies.json"
+    def _load_graph(self, *, project_id: str, workspace_id: str | None) -> dict:
+        project_root = resolve_project_root(
+            artifacts_base_root=self.project_artifacts_root,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        )
+        graph_path = project_root / "graphs" / "dependencies.json"
         if not graph_path.exists():
             return {}
 
