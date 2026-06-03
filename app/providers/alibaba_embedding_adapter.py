@@ -36,7 +36,8 @@ class AlibabaEmbeddingAdapter:
         self.timeout_seconds = max(5, timeout_seconds)
         self.max_retries = max(0, max_retries)
         self.retry_backoff_seconds = max(0.05, retry_backoff_seconds)
-        self.max_batch_size = max(1, max_batch_size)
+        # DashScope embeddings currently enforce a maximum input batch size of 10.
+        self.max_batch_size = min(10, max(1, max_batch_size))
 
         normalized_urls = [item.rstrip("/") for item in (region_base_urls or self._parse_region_urls(base_url)) if item]
         if not normalized_urls:

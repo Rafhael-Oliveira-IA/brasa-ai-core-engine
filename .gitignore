@@ -10,3 +10,4 @@ data/*.jsonl
 data/reflection_reports/*.json
 data/knowledge/**
 !data/knowledge/.gitkeep
+/.brasa

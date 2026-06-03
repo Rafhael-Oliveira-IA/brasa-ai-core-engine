@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     knowledge_dir: Path = BASE_DIR / "data" / "knowledge"
     knowledge_state_file: Path = BASE_DIR / "data" / "knowledge" / "state.json"
     knowledge_max_file_bytes: int = 300000
-    knowledge_include_extensions: str = ".py,.md,.txt,.json,.yaml,.yml,.toml,.ini,.ts,.tsx,.js,.jsx,.cs,.java,.kt,.go,.rs,.cpp,.c,.h"
+    knowledge_include_extensions: str = ".py,.lua,.md,.txt,.json,.xml,.yaml,.yml,.toml,.ini,.ts,.tsx,.js,.jsx,.cs,.java,.kt,.go,.rs,.cpp,.c,.h"
 
     local_model_name: str = "local-lite-v1"
 
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     alibaba_embedding_enabled: bool = True
     alibaba_embedding_model: str = "text-embedding-v4"
     alibaba_embedding_timeout_seconds: int = 25
-    alibaba_embedding_max_batch_size: int = 16
+    alibaba_embedding_max_batch_size: int = 10
     alibaba_embedding_cache_file: Path = BASE_DIR / "data" / "knowledge" / "embeddings_cache.json"
 
     max_escalation_depth: int = 3

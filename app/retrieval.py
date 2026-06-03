@@ -13,6 +13,161 @@ from app.memory.repository import MemoryRepository
 from app.workspace import resolve_project_root, split_scoped_project_id
 
 
+NOISE_PATH_SEGMENTS = (
+    "/.git/",
+    "/build/",
+    "/cmake/",
+    "/vc17/",
+    "/triplets/",
+    "/vcpkg_installed/",
+    "/node_modules/",
+    "/metadata/files/vcpkg_installed/",
+    "/metadata/files/build/",
+    "/metadata/files/cmake/",
+)
+
+MMO_XML_DIRS = (
+    "/data/actions/",
+    "/data/talkactions/",
+    "/data/creaturescripts/",
+    "/data/movements/",
+    "/data/spells/",
+    "/data/globalevents/",
+    "/data/events/",
+)
+
+MMO_CORE_SRC_HINTS = (
+    "/src/otserv",
+    "/src/scriptmanager",
+    "/src/baseevents",
+    "/src/script",
+    "/src/luascript",
+    "/src/actions",
+    "/src/talkaction",
+    "/src/creatureevent",
+    "/src/movement",
+    "/src/spells",
+    "/src/globalevent",
+    "/src/events",
+)
+
+TOOLING_TERMS = {
+    "tool",
+    "tools",
+    "analyzer",
+    "analysis",
+    "script fixer",
+    "migration",
+    "migrations",
+    "sync",
+    "profile",
+}
+
+ARCHITECTURE_TERMS = {
+    "revscriptsys",
+    "xml",
+    "register",
+    "registro",
+    "opcode",
+    "reload",
+    "startup",
+    "loadscripts",
+    "loadfromxml",
+    "mainloader",
+    "script systems",
+}
+
+ACTION_XML_TERMS = {
+    "actions.xml",
+    "action xml",
+    "data/actions",
+    "data/actions/actions.xml",
+    "data/actions/scripts",
+    "itemid",
+    "actionid",
+    "uniqueid",
+    "fromid",
+    "toid",
+    "fromaid",
+    "toaid",
+    "fromuid",
+    "touid",
+    "reload_type_actions",
+}
+
+ACTION_REVSCRIPTS_TERMS = {
+    "revscripts",
+    "revscriptsys",
+    "action()",
+    ":register",
+    ":register()",
+    ":id(",
+    ":aid(",
+    ":uid(",
+    "action:id",
+    "action:aid",
+    "action:uid",
+    "data/scripts",
+    "allowfaruse",
+}
+
+ACTION_BIND_TERMS = {
+    "onuse",
+    "bind",
+    "registro",
+    "register",
+    "duplicidade",
+    "duplicado",
+    "colisao",
+    "conflito",
+    "ordem de resolucao",
+    "ordem de resolução",
+    "unique id",
+    "action id",
+    "item id",
+    "loadscriptsystems",
+    "scriptingmanager::loadscriptsystems",
+    "g_actions->loadfromxml",
+}
+
+DEPENDENCY_NOISE_PREFIXES = (
+    "symbol:",
+    "app.",
+    "urllib.",
+    "xml.etree",
+    "gdb.",
+)
+
+DEPENDENCY_NOISE_EXACT = {
+    "app",
+    "argparse",
+    "dataclasses",
+    "os",
+    "re",
+    "json",
+    "math",
+    "datetime",
+    "typing",
+    "collections",
+    "pathlib",
+    "requests",
+    "httpx",
+    "std",
+    "threading",
+    "time",
+    "traceback",
+    "copy",
+    "csv",
+    "io",
+    "struct",
+    "deadline_timer",
+    "glob",
+    "io_service",
+    "key",
+    "pil",
+}
+
+
 @dataclass
 class RetrievalCandidate:
     source: str
@@ -83,12 +238,20 @@ class ContextRetrievalEngine:
 
         candidates: list[RetrievalCandidate] = []
         candidates.extend(self._memory_candidates(memories, intent_terms))
-        candidates.extend(self._knowledge_candidates(envelope.prompt, intent_terms))
+        candidates.extend(
+            self._knowledge_candidates(
+                envelope.prompt,
+                intent_terms,
+                workspace_id=workspace_id,
+                project_id=plain_project_id,
+            )
+        )
 
         artifact_candidates, direct_dependencies, recent_changes = self._artifact_candidates(
             project_id=plain_project_id,
             workspace_id=workspace_id,
             intent_terms=intent_terms,
+            prompt=envelope.prompt,
         )
         candidates.extend(artifact_candidates)
 
@@ -155,9 +318,11 @@ class ContextRetrievalEngine:
         dependencies = set(direct_dependencies)
         dependencies.update(str(item) for item in graph_expansion.get("dependencies", []))
         dependencies.update(dep for item in selected for dep in item.dependencies)
+        sanitized_dependencies = self._sanitize_dependencies(dependencies)
 
         relevant_systems = set(str(item) for item in graph_expansion.get("relevant_systems", []))
         relevant_systems.update(self._derive_systems_from_sources(selected))
+        sanitized_systems = self._sanitize_relevant_systems(relevant_systems)
 
         architecture_notes = [str(item) for item in graph_expansion.get("architecture_notes", [])]
         architecture_notes.append(f"hot_context={len(hot_context)}")
@@ -180,8 +345,8 @@ class ContextRetrievalEngine:
             "workspace_id": workspace_id,
             "project_id": plain_project_id,
             "user_intent": user_intent,
-            "relevant_systems": sorted(item for item in relevant_systems if item),
-            "dependencies": sorted(item for item in dependencies if item),
+            "relevant_systems": sanitized_systems,
+            "dependencies": sanitized_dependencies,
             "architecture_notes": architecture_notes,
             "recent_changes": recent_changes[:25],
             "risks": risks,
@@ -243,8 +408,14 @@ class ContextRetrievalEngine:
                 "ranked_candidates": 0,
             }
 
+        semantic_candidates = sorted(
+            candidates,
+            key=lambda item: (item.relevance_score, item.importance_score, item.freshness_score),
+            reverse=True,
+        )[:40]
+
         texts = [prompt]
-        texts.extend(self._embedding_text_for_candidate(item) for item in candidates)
+        texts.extend(self._embedding_text_for_candidate(item) for item in semantic_candidates)
 
         try:
             vectors = self.embedding_client.embed_texts(texts)
@@ -267,7 +438,7 @@ class ContextRetrievalEngine:
         query_vector = vectors[0]
         ranked = 0
 
-        for candidate, vector in zip(candidates, vectors[1:], strict=False):
+        for candidate, vector in zip(semantic_candidates, vectors[1:], strict=False):
             semantic_score = self._cosine_similarity(query_vector, vector)
             if semantic_score > 0.0:
                 candidate.semantic_score = semantic_score
@@ -277,9 +448,18 @@ class ContextRetrievalEngine:
             "enabled": True,
             "status": "ok",
             "ranked_candidates": ranked,
+            "considered_candidates": len(semantic_candidates),
+            "total_candidates": len(candidates),
         }
 
-    def _knowledge_candidates(self, prompt: str, terms: set[str]) -> list[RetrievalCandidate]:
+    def _knowledge_candidates(
+        self,
+        prompt: str,
+        terms: set[str],
+        *,
+        workspace_id: str,
+        project_id: str,
+    ) -> list[RetrievalCandidate]:
         if self.knowledge_compiler is None:
             return []
 
@@ -289,15 +469,30 @@ class ContextRetrievalEngine:
         except Exception:
             return []
 
+        workspace_prefix = f".brasa/workspaces/{workspace_id}/{project_id}/".lower()
+
         for node in nodes:
             summary = (node.summary or "").strip()
             if not summary:
                 continue
 
+            source_path = str(node.source_path or "").replace("\\", "/")
+            if not source_path:
+                continue
+
+            if self._is_noise_path(source_path, include_app_internal=True):
+                continue
+
+            # For workspace-scoped domain runs, prefer knowledge generated from that
+            # exact workspace project and suppress unrelated repository internals.
+            if workspace_id != "brasa_ai_workspace":
+                if not source_path.lower().startswith(workspace_prefix):
+                    continue
+
             metadata_text = " ".join(
                 [
                     node.title,
-                    node.source_path,
+                    source_path,
                     " ".join(node.dependencies),
                     " ".join(node.patterns),
                 ]
@@ -327,6 +522,7 @@ class ContextRetrievalEngine:
         project_id: str,
         workspace_id: str | None,
         intent_terms: set[str],
+        prompt: str | None = None,
     ) -> tuple[list[RetrievalCandidate], set[str], list[str]]:
         project_root = resolve_project_root(
             artifacts_base_root=self.project_artifacts_root,
@@ -339,7 +535,10 @@ class ContextRetrievalEngine:
         if not metadata_root.exists():
             return [], set(), []
 
+        prompt_lower = (prompt or "").strip().lower()
+
         candidates: list[RetrievalCandidate] = []
+        fallback_candidates: list[RetrievalCandidate] = []
         expanded_dependencies: set[str] = set()
         recent_changes: list[str] = []
 
@@ -350,6 +549,9 @@ class ContextRetrievalEngine:
 
             file_path = str(metadata.get("path") or "").strip()
             if not file_path:
+                continue
+
+            if self._is_noise_path(file_path, include_app_internal=False):
                 continue
 
             summary_path = self._summary_path_for_metadata(
@@ -366,34 +568,200 @@ class ContextRetrievalEngine:
             query_space = " ".join([file_path, content, " ".join(symbols), " ".join(direct_deps)])
 
             relevance = self._text_relevance(query_space, intent_terms)
-            if relevance <= 0.05:
-                continue
-
             modified_at = self._parse_dt(str(metadata.get("modified_at", "")))
             freshness = self._freshness_score(modified_at)
             confidence = float(metadata.get("confidence", 0.78))
             confidence = max(0.3, min(1.0, confidence))
             importance = 0.50 + min(0.45, len(direct_deps) * 0.04)
+            importance += self._domain_path_bonus(file_path=file_path, prompt_lower=prompt_lower)
+            importance = max(0.05, min(1.0, importance))
+
+            candidate = RetrievalCandidate(
+                source=f"artifact:file:{file_path}",
+                content=content.strip(),
+                relevance_score=relevance,
+                freshness_score=freshness,
+                confidence_score=confidence,
+                importance_score=min(1.0, importance),
+                dependencies=direct_deps,
+                candidate_type="artifact",
+                modified_at=modified_at,
+            )
+
+            if relevance <= 0.05:
+                if self._is_domain_source_path(file_path):
+                    fallback_candidates.append(candidate)
+                continue
 
             expanded_dependencies.update(direct_deps)
             if freshness >= 0.85:
                 recent_changes.append(file_path)
 
-            candidates.append(
-                RetrievalCandidate(
-                    source=f"artifact:file:{file_path}",
-                    content=content.strip(),
-                    relevance_score=relevance,
-                    freshness_score=freshness,
-                    confidence_score=confidence,
-                    importance_score=min(1.0, importance),
-                    dependencies=direct_deps,
-                    candidate_type="artifact",
-                    modified_at=modified_at,
-                )
+            candidates.append(candidate)
+
+        if not candidates and fallback_candidates:
+            fallback_candidates.sort(
+                key=lambda item: (item.importance_score, item.freshness_score, len(item.dependencies)),
+                reverse=True,
             )
+            selected_fallback = fallback_candidates[:24]
+            candidates.extend(selected_fallback)
+            expanded_dependencies.update(dep for item in selected_fallback for dep in item.dependencies)
+            recent_changes.extend(item.source.removeprefix("artifact:file:") for item in selected_fallback if item.is_hot)
 
         return candidates, expanded_dependencies, sorted(set(recent_changes))
+
+    def _is_noise_path(self, value: str, *, include_app_internal: bool) -> bool:
+        normalized = "/" + str(value).replace("\\", "/").strip("/").lower() + "/"
+
+        if include_app_internal and normalized.startswith("/app/"):
+            return True
+
+        return any(segment in normalized for segment in NOISE_PATH_SEGMENTS)
+
+    def _is_domain_source_path(self, value: str) -> bool:
+        normalized = "/" + str(value).replace("\\", "/").strip("/").lower() + "/"
+        if normalized.startswith("/src/") or "/src/" in normalized:
+            return True
+        if "/data/scripts/" in normalized:
+            return True
+        return any(segment in normalized for segment in MMO_XML_DIRS)
+
+    def _domain_path_bonus(self, *, file_path: str, prompt_lower: str) -> float:
+        normalized = "/" + str(file_path).replace("\\", "/").strip("/").lower() + "/"
+        bonus = 0.0
+
+        action_focus = self._contains_any(prompt_lower, ACTION_XML_TERMS | ACTION_REVSCRIPTS_TERMS | ACTION_BIND_TERMS)
+        revscripts_focus = self._contains_any(prompt_lower, ACTION_REVSCRIPTS_TERMS)
+        xml_focus = self._contains_any(prompt_lower, ACTION_XML_TERMS)
+
+        if "/src/" in normalized:
+            bonus += 0.16
+        if "/data/scripts/" in normalized:
+            bonus += 0.20
+        if any(segment in normalized for segment in MMO_XML_DIRS):
+            bonus += 0.14
+
+        if "/data/tools/" in normalized or normalized.startswith("/tools/"):
+            if not any(term in prompt_lower for term in TOOLING_TERMS):
+                bonus -= 0.22
+
+        if any(term in prompt_lower for term in ARCHITECTURE_TERMS):
+            if any(hint in normalized for hint in MMO_CORE_SRC_HINTS):
+                bonus += 0.24
+            if "/data/scripts/" in normalized:
+                bonus += 0.12
+            if any(segment in normalized for segment in MMO_XML_DIRS):
+                bonus += 0.08
+
+        if action_focus:
+            if "/data/actions/actions.xml/" in normalized:
+                bonus += 0.34
+            if "/data/actions/scripts/" in normalized:
+                bonus += 0.24
+            if "/data/scripts/" in normalized:
+                bonus += 0.20
+            if "/src/actions" in normalized:
+                bonus += 0.28
+            if "/src/luascript" in normalized:
+                bonus += 0.26
+            if "/src/baseevents" in normalized:
+                bonus += 0.20
+            if "/src/scriptmanager" in normalized:
+                bonus += 0.20
+            if "/src/script" in normalized:
+                bonus += 0.16
+
+        if xml_focus and normalized.endswith(".xml/"):
+            bonus += 0.08
+
+        if revscripts_focus and "/data/scripts/" in normalized:
+            bonus += 0.12
+
+        if "npc" in prompt_lower and ("/data/scripts/" in normalized or "/src/npc" in normalized):
+            bonus += 0.08
+        if "spell" in prompt_lower and ("/data/spells/" in normalized or "/src/spells" in normalized):
+            bonus += 0.08
+        if "quest" in prompt_lower and "/src/quests" in normalized:
+            bonus += 0.10
+
+        return bonus
+
+    def _contains_any(self, value: str, terms: set[str]) -> bool:
+        lower = value.lower()
+        return any(term in lower for term in terms)
+
+    def _sanitize_dependencies(self, dependencies: set[str]) -> list[str]:
+        curated: list[str] = []
+
+        for item in sorted(str(value).strip() for value in dependencies if str(value).strip()):
+            lower = item.lower()
+            if lower.startswith(DEPENDENCY_NOISE_PREFIXES):
+                continue
+            if lower in DEPENDENCY_NOISE_EXACT:
+                continue
+            if lower.startswith("file:"):
+                normalized_file = lower.removeprefix("file:").replace("\\", "/")
+                if not (
+                    normalized_file.startswith("src/")
+                    or normalized_file.startswith("data/")
+                    or normalized_file.startswith("tools/")
+                ):
+                    continue
+            if lower.startswith("__"):
+                continue
+            if "." in lower and not lower.startswith("file:"):
+                continue
+            if len(item) < 3:
+                continue
+            curated.append(item)
+
+        return curated[:180]
+
+    def _sanitize_relevant_systems(self, systems: set[str]) -> list[str]:
+        result: set[str] = set()
+
+        for raw in systems:
+            value = str(raw).strip()
+            if not value:
+                continue
+
+            normalized = value.replace("\\", "/").strip()
+            if normalized.startswith("file:"):
+                normalized = normalized.split(":", maxsplit=1)[1]
+
+            head = normalized.split("/", maxsplit=1)[0].lower()
+            if head == "data":
+                parts = normalized.split("/")
+                if len(parts) >= 2 and parts[1]:
+                    second = parts[1].lower()
+                    if second in {
+                        "actions",
+                        "scripts",
+                        "events",
+                        "spells",
+                        "movements",
+                        "talkactions",
+                        "creaturescripts",
+                        "globalevents",
+                    }:
+                        result.add(f"data/{second}")
+                continue
+
+            if head in {"tools", "build", "cmake", "vcpkg_installed", "metadata"}:
+                continue
+
+            if normalized.lower().startswith(".brasa/workspaces/"):
+                parts = normalized.split("/")
+                if len(parts) >= 5:
+                    head = parts[4]
+                    if head:
+                        result.add(head)
+                continue
+
+            result.add(normalized)
+
+        return sorted(item for item in result if item)[:40]
 
     def _deduplicate(self, candidates: list[RetrievalCandidate]) -> list[RetrievalCandidate]:
         dedup: dict[str, RetrievalCandidate] = {}
@@ -509,7 +877,12 @@ class ContextRetrievalEngine:
             if source.startswith("artifact:file:"):
                 relative = source.removeprefix("artifact:file:")
                 if "/" in relative:
-                    systems.add(relative.split("/", maxsplit=1)[0])
+                    parts = relative.split("/")
+                    head = parts[0]
+                    if head == "data" and len(parts) > 1:
+                        systems.add(f"data/{parts[1]}")
+                    else:
+                        systems.add(head)
             elif source.startswith("knowledge:module:"):
                 tail = source.split(":")[-1]
                 systems.add(tail.replace("module:", ""))
