@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -915,7 +915,7 @@ class ContextRetrievalEngine:
 
         return sorted(
             dedup.values(),
-            key=lambda item: (item.is_hot, item.final_score, len(item.dependencies)),
+            key=lambda item: (item.final_score, item.is_hot, len(item.dependencies)),
             reverse=True,
         )
 
@@ -923,14 +923,30 @@ class ContextRetrievalEngine:
         selected: list[RetrievalCandidate] = []
         dropped: list[RetrievalCandidate] = []
         running = 0
+        min_truncate_chars = 260
 
         for candidate in candidates:
             size = len(candidate.content)
-            if running + size > self.max_chars:
+            remaining = self.max_chars - running
+            if remaining <= 0:
                 dropped.append(candidate)
                 continue
-            selected.append(candidate)
-            running += size
+
+            if size <= remaining:
+                selected.append(candidate)
+                running += size
+                continue
+
+            # Keep the highest-ranked oversized candidates by clipping them
+            # instead of dropping all context from that source.
+            if remaining >= min_truncate_chars:
+                base_limit = max(min_truncate_chars, remaining - 4)
+                clipped_text = candidate.content[:base_limit].rstrip() + "\n..."
+                clipped = replace(candidate, content=clipped_text)
+                selected.append(clipped)
+                running += len(clipped_text)
+            else:
+                dropped.append(candidate)
 
         return selected, dropped
 
