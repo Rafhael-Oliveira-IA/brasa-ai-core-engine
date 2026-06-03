@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.pytest_cache/
+
+# Runtime artifacts
+data/*.db
+data/*.jsonl
+data/reflection_reports/*.json
+data/knowledge/**
+!data/knowledge/.gitkeep
