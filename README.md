@@ -159,6 +159,18 @@ The runtime understands:
 * Lua registration flows
 * Unity gameplay structures
 
+XML Retrieval Guarantee:
+
+* XML-focused queries (for example `actions.xml`, `movements.xml`, `talkactions.xml`) always keep XML context in the final selected packet.
+* When a specific XML filename is mentioned, retrieval preserves the exact XML file in selected context when that file exists in artifacts.
+* Ranking boosts the exact XML filename mentioned in the prompt, so classic XML and runtime script models are returned together when relevant.
+* Budget compression truncates oversized high-priority candidates instead of dropping them entirely, reducing loss of architectural anchor files.
+
+Regression coverage:
+
+* [tests/test_retrieval_noise_filtering.py](tests/test_retrieval_noise_filtering.py) validates XML selection and exact filename preservation across actions, movements, and talkactions queries.
+* [tests/test_retrieval_engine.py](tests/test_retrieval_engine.py) validates clipping behavior for oversized high-priority candidates.
+
 ---
 
 ## 4. Cognitive Query Engine

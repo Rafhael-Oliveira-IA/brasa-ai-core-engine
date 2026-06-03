@@ -5,6 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import pytest
+
 from app.contracts import RequestEnvelope
 from app.knowledge.models import KnowledgeLevel
 from app.memory.repository import MemoryRepository
@@ -504,3 +506,123 @@ def test_dotted_xml_filename_terms_match_classic_xml_candidates() -> None:
         packet, _ = engine.assemble(envelope)
         top_sources = [item.source for item in packet.snippets[:8]]
         assert "artifact:file:data/actions/actions.xml" in top_sources
+
+
+@pytest.mark.parametrize(
+    ("xml_path", "runtime_path", "prompt"),
+    [
+        (
+            "data/actions/actions.xml",
+            "data/scripts/actions/lever.lua",
+            "explique actions.xml versus data/scripts actions com register",
+        ),
+        (
+            "data/movements/movements.xml",
+            "data/scripts/movements/teleport_tiles.lua",
+            "movements.xml fromid toid script versus MoveEvent() register em data/scripts",
+        ),
+        (
+            "data/talkactions/talkactions.xml",
+            "data/scripts/talkactions/rank.lua",
+            "talkactions.xml classico versus data/scripts runtime com register",
+        ),
+    ],
+)
+def test_xml_focused_queries_always_select_matching_xml_file(
+    xml_path: str,
+    runtime_path: str,
+    prompt: str,
+) -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        xml_meta = metadata_root / Path(xml_path).parent / f"{Path(xml_path).stem}.meta.json"
+        xml_summary = summaries_root / Path(xml_path).parent / f"{Path(xml_path).stem}.summary.md"
+        write_json(
+            xml_meta,
+            {
+                "path": xml_path,
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["script", "itemid", "actionid", "fromid", "toid"],
+                "symbols": [Path(xml_path).stem],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            xml_summary,
+            f"# {Path(xml_path).stem}\nclassic xml binding file for {xml_path}\n",
+        )
+
+        runtime_meta = metadata_root / Path(runtime_path).parent / f"{Path(runtime_path).stem}.meta.json"
+        runtime_summary = summaries_root / Path(runtime_path).parent / f"{Path(runtime_path).stem}.summary.md"
+        write_json(
+            runtime_meta,
+            {
+                "path": runtime_path,
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": [":register", "onUse", "runtime-script-register"],
+                "symbols": ["runtimeHandler"],
+                "confidence": 0.95,
+            },
+        )
+        write_text(
+            runtime_summary,
+            "# runtime script\nruntime registration handler with register\n" * 60,
+        )
+
+        # Distractor XML with strong signal: matching XML filename in prompt must still win.
+        write_json(
+            metadata_root / "data" / "items" / "items.meta.json",
+            {
+                "path": "data/items/items.xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["id", "type", "script"],
+                "symbols": ["items"],
+                "confidence": 0.99,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "items" / "items.summary.md",
+            "# items xml\nlarge generic xml file\n" * 80,
+        )
+
+        # Add additional high-signal runtime files to create compression pressure.
+        for index in range(1, 10):
+            noisy_path = f"data/scripts/noisy/noisy_{index}.lua"
+            noisy_meta = metadata_root / Path(noisy_path).parent / f"noisy_{index}.meta.json"
+            noisy_summary = summaries_root / Path(noisy_path).parent / f"noisy_{index}.summary.md"
+            write_json(
+                noisy_meta,
+                {
+                    "path": noisy_path,
+                    "modified_at": "2026-06-03T12:00:00+00:00",
+                    "dependencies": [":register", "onUse", "runtime-script-register"],
+                    "symbols": [f"Noisy{index}"],
+                    "confidence": 0.96,
+                },
+            )
+            write_text(
+                noisy_summary,
+                "# noisy runtime\nruntime register flow\n" * 40,
+            )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=900,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt=prompt,
+        )
+
+        packet, _ = engine.assemble(envelope)
+        sources = [item.source for item in packet.snippets]
+        assert f"artifact:file:{xml_path}" in sources

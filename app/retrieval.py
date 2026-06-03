@@ -375,7 +375,7 @@ class ContextRetrievalEngine:
         )
 
         deduplicated = self._deduplicate(candidates)
-        selected, dropped = self._compress(deduplicated)
+        selected, dropped = self._compress(deduplicated, prompt=envelope.prompt)
 
         hot_context = [item.source for item in selected if item.is_hot]
         cold_knowledge = [item.source for item in selected if not item.is_hot]
@@ -745,6 +745,7 @@ class ContextRetrievalEngine:
         normalized = "/" + str(file_path).replace("\\", "/").strip("/").lower() + "/"
         extension = self._path_extension(normalized)
         bonus = 0.0
+        xml_filename_terms = self._xml_filename_terms(prompt_lower)
 
         classic_focus = self._contains_any(prompt_lower, CLASSIC_SCRIPT_TERMS)
         runtime_focus = self._contains_any(prompt_lower, RUNTIME_SCRIPT_TERMS)
@@ -813,7 +814,12 @@ class ContextRetrievalEngine:
                 bonus += 0.16
 
         if xml_focus and normalized.endswith(".xml/"):
-            bonus += 0.08
+            bonus += 0.16
+            if xml_filename_terms:
+                for xml_name in xml_filename_terms:
+                    if f"/{xml_name}.xml/" in normalized:
+                        bonus += 0.30
+                        break
 
         if revscripts_focus and "/data/scripts/" in normalized:
             bonus += 0.12
@@ -830,6 +836,13 @@ class ContextRetrievalEngine:
     def _contains_any(self, value: str, terms: set[str]) -> bool:
         lower = value.lower()
         return any(term in lower for term in terms)
+
+    def _xml_filename_terms(self, prompt_lower: str) -> set[str]:
+        return {
+            item
+            for item in re.findall(r"([a-z0-9_\-]+)\.xml", prompt_lower)
+            if len(item) >= 2
+        }
 
     def _path_extension(self, normalized_with_slashes: str) -> str:
         normalized = normalized_with_slashes.strip("/")
@@ -919,7 +932,12 @@ class ContextRetrievalEngine:
             reverse=True,
         )
 
-    def _compress(self, candidates: list[RetrievalCandidate]) -> tuple[list[RetrievalCandidate], list[RetrievalCandidate]]:
+    def _compress(
+        self,
+        candidates: list[RetrievalCandidate],
+        *,
+        prompt: str | None = None,
+    ) -> tuple[list[RetrievalCandidate], list[RetrievalCandidate]]:
         selected: list[RetrievalCandidate] = []
         dropped: list[RetrievalCandidate] = []
         running = 0
@@ -948,7 +966,86 @@ class ContextRetrievalEngine:
             else:
                 dropped.append(candidate)
 
+        prompt_lower = (prompt or "").lower()
+        xml_terms = self._xml_filename_terms(prompt_lower)
+        has_xml = any(self._is_xml_artifact_candidate(item) for item in selected)
+        has_matching_xml = any(self._matches_xml_filename_term(item, xml_terms) for item in selected)
+
+        should_force_xml = self._is_xml_focused_prompt(prompt) and not has_xml
+        should_force_matching_xml = bool(xml_terms) and not has_matching_xml
+
+        if should_force_xml or should_force_matching_xml:
+            xml_candidate = None
+            if xml_terms:
+                xml_candidate = next(
+                    (
+                        item
+                        for item in candidates
+                        if self._is_xml_artifact_candidate(item)
+                        and self._matches_xml_filename_term(item, xml_terms)
+                    ),
+                    None,
+                )
+            if xml_candidate is None:
+                xml_candidate = next((item for item in candidates if self._is_xml_artifact_candidate(item)), None)
+            if xml_candidate is not None:
+                while True:
+                    fitted = self._fit_candidate_with_budget(
+                        candidate=xml_candidate,
+                        remaining=self.max_chars - running,
+                        min_truncate_chars=min_truncate_chars,
+                    )
+                    if fitted is not None:
+                        selected.append(fitted)
+                        running += len(fitted.content)
+                        break
+
+                    if not selected:
+                        dropped.append(xml_candidate)
+                        break
+
+                    removed = selected.pop()
+                    running = max(0, running - len(removed.content))
+                    dropped.append(removed)
+
         return selected, dropped
+
+    def _fit_candidate_with_budget(
+        self,
+        *,
+        candidate: RetrievalCandidate,
+        remaining: int,
+        min_truncate_chars: int,
+    ) -> RetrievalCandidate | None:
+        if remaining <= 0:
+            return None
+
+        size = len(candidate.content)
+        if size <= remaining:
+            return candidate
+
+        if remaining < min_truncate_chars:
+            return None
+
+        base_limit = max(min_truncate_chars, remaining - 4)
+        clipped_text = candidate.content[:base_limit].rstrip() + "\n..."
+        return replace(candidate, content=clipped_text)
+
+    def _is_xml_focused_prompt(self, prompt: str | None) -> bool:
+        lower = (prompt or "").lower()
+        return ".xml" in lower or " xml" in lower or lower.startswith("xml")
+
+    def _is_xml_artifact_candidate(self, candidate: RetrievalCandidate) -> bool:
+        return candidate.source.startswith("artifact:file:") and candidate.source.lower().endswith(".xml")
+
+    def _matches_xml_filename_term(self, candidate: RetrievalCandidate, xml_terms: set[str]) -> bool:
+        if not xml_terms:
+            return False
+        if not self._is_xml_artifact_candidate(candidate):
+            return False
+
+        source_lower = candidate.source.lower()
+        return any(f"/{term}.xml" in source_lower for term in xml_terms)
 
     def _build_risk_analysis(
         self,
