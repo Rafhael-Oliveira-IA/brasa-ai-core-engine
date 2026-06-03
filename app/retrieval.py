@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -970,9 +971,20 @@ class ContextRetrievalEngine:
         return "general-query"
 
     def _intent_terms(self, prompt: str) -> set[str]:
-        raw_terms = [item.strip().lower() for item in prompt.split()]
-        cleaned = {"".join(ch for ch in term if ch.isalnum() or ch in {"_", "-"}) for term in raw_terms}
-        return {term for term in cleaned if len(term) >= 2}
+        lower = prompt.lower()
+        terms: set[str] = set()
+
+        for token in re.findall(r"[a-z0-9_]+(?:-[a-z0-9_]+)*", lower):
+            if len(token) >= 2:
+                terms.add(token)
+
+        # Preserve compact variants for compatibility with existing matching behavior.
+        compact = "".join(ch for ch in lower if ch.isalnum() or ch in {"_", "-", " "})
+        for token in compact.split():
+            if len(token) >= 2:
+                terms.add(token)
+
+        return terms
 
     def _text_relevance(self, value: str, terms: set[str]) -> float:
         if not terms:

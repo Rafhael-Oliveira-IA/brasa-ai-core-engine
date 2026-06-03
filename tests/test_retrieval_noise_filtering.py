@@ -448,3 +448,59 @@ def test_classic_xml_and_runtime_models_are_prioritized_for_talkactions_query() 
         systems_lower = [str(item).lower() for item in systems]
         assert "data/talkactions" in systems_lower
         assert "data/scripts" in systems_lower
+
+
+def test_dotted_xml_filename_terms_match_classic_xml_candidates() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        write_json(
+            metadata_root / "data" / "actions" / "actions.meta.json",
+            {
+                "path": "data/actions/actions.xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["itemid", "actionid", "uniqueid", "script"],
+                "symbols": ["action"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "actions" / "actions.summary.md",
+            "# actions xml\nclassic xml binds itemid/actionid/uniqueid to scripts\n",
+        )
+
+        write_json(
+            metadata_root / "data" / "scripts" / "actions" / "lever.meta.json",
+            {
+                "path": "data/scripts/actions/lever.lua",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["Action()", ":register"],
+                "symbols": ["leverAction"],
+                "confidence": 0.88,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "scripts" / "actions" / "lever.summary.md",
+            "# lever revscript\nruntime Action registration\n",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=4000,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt="explica actions.xml versus data/scripts actions com register",
+        )
+
+        packet, _ = engine.assemble(envelope)
+        top_sources = [item.source for item in packet.snippets[:8]]
+        assert "artifact:file:data/actions/actions.xml" in top_sources
