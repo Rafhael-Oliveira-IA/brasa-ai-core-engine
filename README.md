@@ -5,6 +5,9 @@
 Cognitive Runtime Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
 
+Reflection & Cognitive Calibration Update
+https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
+
 BRASA Cognitive Runtime is a hybrid cognitive architecture designed for large-scale game development workflows, persistent architectural memory, and AI-assisted software reasoning.
 
 The system combines:
@@ -350,6 +353,35 @@ The runtime already understands:
  ├── traces/
  └── cache/
 ```
+
+---
+
+# Cognition Plane Separation
+
+```txt id="calibration-planes"
+.brasa/
+ ├── runtime/
+ │    ├── sessions/
+ │    ├── traces/
+ │    └── temporary_context/
+ │
+ ├── cognition/
+ │    ├── projects/
+ │    ├── reflections/
+ │    ├── evaluations/
+ │    ├── graph_memory/
+ │    └── generations/
+ │
+ └── calibration/
+	├── failures/
+	├── heuristics/
+	├── weights/
+	└── ranking_profiles/
+```
+
+Runtime cognition keeps fast-changing state (sessions/traces/context packets).
+
+Knowledge cognition keeps durable architectural memory and reflective intelligence.
 
 ---
 

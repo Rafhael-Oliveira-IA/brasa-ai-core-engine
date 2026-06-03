@@ -64,6 +64,204 @@ class TaskRequest(BaseModel):
     options: TaskExecutionOptions = Field(default_factory=TaskExecutionOptions)
 
 
+class ActionType(str, Enum):
+    CREATE_FILE = "create_file"
+    UPDATE_FILE = "update_file"
+    PATCH_FILE = "patch_file"
+    DELETE_FILE = "delete_file"
+
+
+class ActionRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ValidationSeverity(str, Enum):
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class ActionStepStatus(str, Enum):
+    PLANNED = "planned"
+    APPLIED = "applied"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    ROLLED_BACK = "rolled_back"
+
+
+class ActionPatchOperation(BaseModel):
+    find: str = Field(min_length=1)
+    replace: str = ""
+    replace_all: bool = False
+
+
+class ActionStep(BaseModel):
+    step_id: str = Field(default_factory=lambda: str(uuid4()))
+    type: ActionType = ActionType.UPDATE_FILE
+    target: str = Field(min_length=1)
+    intent: str = Field(min_length=2)
+    risk: ActionRisk = ActionRisk.MEDIUM
+    rationale: str = ""
+    patches: list[ActionPatchOperation] = Field(default_factory=list)
+    content: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionPlanRequest(BaseModel):
+    plan_id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    prompt: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    max_actions: int = Field(default=8, ge=1, le=40)
+
+
+class ActionPlan(BaseModel):
+    plan_id: str
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    prompt: str
+    summary: str = ""
+    actions: list[ActionStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    retrieval: dict[str, Any] = Field(default_factory=dict)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+
+class ActionValidationIssue(BaseModel):
+    step_id: str
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+    code: str
+    message: str
+
+
+class ActionValidationReport(BaseModel):
+    ok: bool = True
+    issues: list[ActionValidationIssue] = Field(default_factory=list)
+    blocked_steps: list[str] = Field(default_factory=list)
+
+
+class ActionExecutionOptions(BaseModel):
+    dry_run: bool = True
+    allow_high_risk: bool = False
+    auto_rollback_on_error: bool = True
+    run_feedback_loop: bool = True
+
+
+class ActionExecuteRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    plan: ActionPlan
+    options: ActionExecutionOptions = Field(default_factory=ActionExecutionOptions)
+
+
+class ActionStepResult(BaseModel):
+    step_id: str
+    target: str
+    status: ActionStepStatus
+    message: str = ""
+    backup_path: str | None = None
+    bytes_written: int = 0
+
+
+class ActionExecutionReport(BaseModel):
+    execution_id: str = Field(default_factory=lambda: str(uuid4()))
+    plan_id: str
+    dry_run: bool = True
+    applied: int = 0
+    skipped: int = 0
+    failed: int = 0
+    changed_files: list[str] = Field(default_factory=list)
+    validation: ActionValidationReport = Field(default_factory=ActionValidationReport)
+    results: list[ActionStepResult] = Field(default_factory=list)
+    feedback_notes: list[str] = Field(default_factory=list)
+    rollback_performed: bool = False
+    rollback_restored_files: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ActionRollbackRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    execution_id: str = Field(min_length=8)
+
+
+class ActionRollbackReport(BaseModel):
+    execution_id: str
+    restored_files: int = 0
+    removed_files: int = 0
+    skipped_files: int = 0
+    notes: list[str] = Field(default_factory=list)
+
+
+class OrchestratorMode(str, Enum):
+    MANUAL = "manual"
+    AUTOPILOT = "autopilot"
+
+
+class OrchestratorDecisionState(str, Enum):
+    AUTO_EXECUTE = "auto_execute"
+    REQUIRES_APPROVAL = "requires_approval"
+    BLOCKED = "blocked"
+
+
+class OrchestratorDecision(BaseModel):
+    state: OrchestratorDecisionState = OrchestratorDecisionState.REQUIRES_APPROVAL
+    highest_risk: ActionRisk = ActionRisk.MEDIUM
+    execute_now: bool = False
+    reason: str = ""
+
+
+class OrchestratorRunRequest(BaseModel):
+    run_id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    intent: str = Field(min_length=1)
+    mode: OrchestratorMode = OrchestratorMode.MANUAL
+    max_iterations: int = Field(default=1, ge=1, le=5)
+    project_path: str | None = None
+    dry_run: bool = False
+    auto_execute_low_risk: bool = True
+    auto_execute_medium_risk: bool = False
+    allow_high_risk: bool = False
+    block_critical_risk: bool = True
+    evaluation_limit: int = Field(default=120, ge=20, le=2000)
+    run_reflection: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrchestratorIterationReport(BaseModel):
+    iteration: int
+    plan: ActionPlan
+    decision: OrchestratorDecision
+    execution: ActionExecutionReport | None = None
+    ingestion: dict[str, Any] = Field(default_factory=dict)
+    context_refresh: dict[str, Any] = Field(default_factory=dict)
+    evaluation: dict[str, Any] = Field(default_factory=dict)
+    reflection: dict[str, Any] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+
+
+class OrchestratorRunReport(BaseModel):
+    run_id: str
+    workspace_id: str
+    project_id: str
+    user_id: str
+    mode: OrchestratorMode
+    final_state: OrchestratorDecisionState = OrchestratorDecisionState.REQUIRES_APPROVAL
+    iterations: list[OrchestratorIterationReport] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime = Field(default_factory=utc_now)
+
+
 class ContextSnippet(BaseModel):
     source: str
     content: str

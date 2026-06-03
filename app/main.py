@@ -6,10 +6,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.action_engine import CognitiveActionEngine
 from app.calibration import CognitiveDiagnosticsEngine
 from app.context_builder import ContextBuilder
 from app.contracts import (
+    ActionExecuteRequest,
+    ActionExecutionReport,
+    ActionPlan,
+    ActionPlanRequest,
+    ActionRollbackReport,
+    ActionRollbackRequest,
     ChatResponse,
     CognitiveFeedbackCreateRequest,
     CognitiveFeedbackEntry,
@@ -21,6 +29,8 @@ from app.contracts import (
     MemoryEntry,
     MemoryScope,
     MemorySearchResponse,
+    OrchestratorRunReport,
+    OrchestratorRunRequest,
     ReflectionReport,
     RequestEnvelope,
     TaskRequest,
@@ -40,6 +50,7 @@ from app.knowledge import (
     KnowledgeTreeResponse,
 )
 from app.memory.repository import MemoryRepository
+from app.orchestrator import CognitiveOrchestrator
 from app.providers import AlibabaAdapter, AlibabaEmbeddingAdapter, LocalAdapter
 from app.query_engine import CognitiveQueryEngine
 from app.reflection.nightly_reflection import ReflectionService
@@ -63,6 +74,8 @@ class RuntimeContainer:
     router: AIRouter
     query_engine: CognitiveQueryEngine
     task_engine: CognitiveTaskEngine
+    action_engine: CognitiveActionEngine
+    orchestrator: CognitiveOrchestrator
     reflection: ReflectionService
     evaluation_engine: EvaluationEngine
     telemetry: TraceLogger
@@ -125,6 +138,21 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         embedding_client=embedding_client,
     )
 
+    blocked_paths = tuple(
+        item.strip()
+        for item in settings.action_blocked_paths.split(",")
+        if item.strip()
+    )
+    action_engine = CognitiveActionEngine(
+        context_builder=context_builder,
+        memory_repository=memory_repository,
+        workspace_root=settings.action_workspace_root,
+        backup_root=settings.action_backup_dir,
+        blocked_path_prefixes=blocked_paths,
+        allow_delete=settings.action_allow_delete,
+        max_file_bytes=settings.action_max_file_bytes,
+    )
+
     local_provider = LocalAdapter(model_name=settings.local_model_name)
     alibaba_provider = AlibabaAdapter(
         api_key=settings.alibaba_api_key,
@@ -176,6 +204,15 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         memory_repository=memory_repository,
         reflection=reflection,
     )
+    orchestrator = CognitiveOrchestrator(
+        action_engine=action_engine,
+        context_builder=context_builder,
+        ingestion_pipeline=ingestion_pipeline,
+        knowledge_compiler=knowledge_compiler,
+        evaluation_engine=evaluation_engine,
+        reflection=reflection,
+        memory_repository=memory_repository,
+    )
 
     return RuntimeContainer(
         settings=settings,
@@ -188,6 +225,8 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         router=router,
         query_engine=query_engine,
         task_engine=task_engine,
+        action_engine=action_engine,
+        orchestrator=orchestrator,
         reflection=reflection,
         evaluation_engine=evaluation_engine,
         telemetry=telemetry,
@@ -226,6 +265,19 @@ app = FastAPI(
     title="Brasa AI Core Lite",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+_cors_origins = [
+    item.strip()
+    for item in get_settings().frontend_allowed_origins.split(",")
+    if item.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -269,6 +321,130 @@ def scope_task(payload: TaskRequest) -> TaskRequest:
             "metadata": metadata,
         }
     )
+
+
+def scope_action_plan(payload: ActionPlanRequest) -> ActionPlanRequest:
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+    metadata = dict(payload.metadata)
+    metadata.setdefault("workspace_id", workspace_id)
+    metadata.setdefault("project_id", payload.project_id)
+
+    return payload.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id),
+            "metadata": metadata,
+        }
+    )
+
+
+def scope_action_execute(payload: ActionExecuteRequest) -> ActionExecuteRequest:
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+    scoped_project = scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id)
+    scoped_plan = payload.plan.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project,
+            "user_id": payload.user_id,
+        }
+    )
+
+    return payload.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project,
+            "plan": scoped_plan,
+        }
+    )
+
+
+def scope_action_rollback(payload: ActionRollbackRequest) -> ActionRollbackRequest:
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+    scoped_project = scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id)
+    return payload.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project,
+        }
+    )
+
+
+def scope_orchestrator(payload: OrchestratorRunRequest) -> OrchestratorRunRequest:
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+    metadata = dict(payload.metadata)
+    metadata.setdefault("workspace_id", workspace_id)
+    metadata.setdefault("project_id", payload.project_id)
+
+    return payload.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id),
+            "metadata": metadata,
+        }
+    )
+
+
+def run_action_feedback_loop(
+    *,
+    runtime: RuntimeContainer,
+    workspace_id: str,
+    project_id: str,
+    user_id: str,
+    report: ActionExecutionReport,
+) -> list[str]:
+    notes: list[str] = []
+
+    try:
+        knowledge_report = runtime.knowledge_compiler.sync(force=False)
+        notes.append(
+            (
+                "knowledge_sync: "
+                f"scanned={knowledge_report.scanned_files}, changed={knowledge_report.changed_nodes}"
+            )
+        )
+    except Exception as exc:
+        notes.append(f"knowledge_sync_failed: {exc}")
+
+    try:
+        evaluation_report = runtime.evaluation_engine.run(
+            limit=120,
+            project_id=project_id,
+            user_id=user_id,
+        )
+        notes.append(f"evaluation: sample_size={evaluation_report.sample_size}")
+    except Exception as exc:
+        notes.append(f"evaluation_failed: {exc}")
+
+    try:
+        reflection_report = runtime.reflection.run_once(
+            trigger="action_execution",
+            project_id=project_id,
+            user_id=user_id,
+        )
+        notes.append(f"reflection: summary_entry_id={reflection_report.summary_entry_id}")
+    except Exception as exc:
+        notes.append(f"reflection_failed: {exc}")
+
+    runtime.memory_repository.add_entry(
+        MemoryEntry(
+            project_id=project_id,
+            user_id=user_id,
+            scope=MemoryScope.EPISODIC,
+            content=(
+                f"Action execution completed. Applied={report.applied}, Failed={report.failed}.\n"
+                f"Changed files: {', '.join(report.changed_files[:20])}\n"
+                f"Feedback loop: {' | '.join(notes)}"
+            ),
+            tags=["action", "feedback-loop", "auto"],
+            confidence=0.76,
+            provenance={
+                "workspace_id": workspace_id,
+                "execution_id": report.execution_id,
+            },
+        )
+    )
+
+    return notes
 
 
 @app.get("/health")
@@ -424,6 +600,98 @@ async def execute_task(payload: TaskRequest, request: Request) -> TaskResponse:
         raise HTTPException(status_code=500, detail=f"Task execution failed: {exc}") from exc
 
     return task_response
+
+
+@app.post("/v1/actions/plan", response_model=ActionPlan)
+def plan_actions(payload: ActionPlanRequest, request: Request) -> ActionPlan:
+    runtime = runtime_from(request)
+    payload = scope_action_plan(payload)
+
+    if not hasattr(runtime, "action_engine"):
+        raise HTTPException(status_code=503, detail="Action engine is not available in this runtime.")
+
+    try:
+        plan, _ = runtime.action_engine.plan(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Action planning failed: {exc}") from exc
+
+    return plan
+
+
+@app.post("/v1/actions/execute", response_model=ActionExecutionReport)
+def execute_actions(payload: ActionExecuteRequest, request: Request) -> ActionExecutionReport:
+    runtime = runtime_from(request)
+    payload = scope_action_execute(payload)
+
+    if not hasattr(runtime, "action_engine"):
+        raise HTTPException(status_code=503, detail="Action engine is not available in this runtime.")
+
+    try:
+        report = runtime.action_engine.execute(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Action execution failed: {exc}") from exc
+
+    if payload.options.run_feedback_loop and not payload.options.dry_run and report.applied > 0:
+        report.feedback_notes = run_action_feedback_loop(
+            runtime=runtime,
+            workspace_id=payload.workspace_id,
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+            report=report,
+        )
+
+    return report
+
+
+@app.post("/v1/actions/rollback", response_model=ActionRollbackReport)
+def rollback_actions(payload: ActionRollbackRequest, request: Request) -> ActionRollbackReport:
+    runtime = runtime_from(request)
+    payload = scope_action_rollback(payload)
+
+    if not hasattr(runtime, "action_engine"):
+        raise HTTPException(status_code=503, detail="Action engine is not available in this runtime.")
+
+    try:
+        rollback_report = runtime.action_engine.rollback(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Action rollback failed: {exc}") from exc
+
+    if rollback_report.restored_files > 0 or rollback_report.removed_files > 0:
+        runtime.memory_repository.add_entry(
+            MemoryEntry(
+                project_id=payload.project_id,
+                user_id=payload.user_id,
+                scope=MemoryScope.EPISODIC,
+                content=(
+                    f"Rollback executed for action execution {payload.execution_id}.\n"
+                    f"Restored={rollback_report.restored_files}, Removed={rollback_report.removed_files}."
+                ),
+                tags=["action", "rollback", "auto"],
+                confidence=0.75,
+                provenance={
+                    "workspace_id": payload.workspace_id,
+                    "execution_id": payload.execution_id,
+                },
+            )
+        )
+
+    return rollback_report
+
+
+@app.post("/v1/orchestrator/run", response_model=OrchestratorRunReport)
+def run_orchestrator(payload: OrchestratorRunRequest, request: Request) -> OrchestratorRunReport:
+    runtime = runtime_from(request)
+    payload = scope_orchestrator(payload)
+
+    if not hasattr(runtime, "orchestrator"):
+        raise HTTPException(status_code=503, detail="Orchestrator is not available in this runtime.")
+
+    try:
+        report = runtime.orchestrator.run(payload)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Orchestrator execution failed: {exc}") from exc
+
+    return report
 
 
 @app.post("/v1/context/assemble", response_model=ContextAssembleResponse)

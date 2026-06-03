@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "Brasa AI Core Lite"
     environment: str = "dev"
     log_level: str = "INFO"
+    frontend_allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
 
     data_dir: Path = BASE_DIR / "data"
     brasa_runtime_root: Path = BASE_DIR / ".brasa" / "runtime"
@@ -33,6 +34,13 @@ class Settings(BaseSettings):
     knowledge_state_file: Path = BASE_DIR / "data" / "knowledge" / "state.json"
     knowledge_max_file_bytes: int = 300000
     knowledge_include_extensions: str = ".py,.lua,.md,.txt,.json,.xml,.yaml,.yml,.toml,.ini,.ts,.tsx,.js,.jsx,.cs,.java,.kt,.go,.rs,.cpp,.c,.h"
+    action_workspace_root: Path = BASE_DIR
+    action_backup_dir: Path = BASE_DIR / ".brasa" / "runtime" / "action_backups"
+    action_blocked_paths: str = (
+        ".git,node_modules,.brasa,data/evaluations,data/knowledge,data/reflection_reports,data/traces.jsonl,data/memory.db"
+    )
+    action_allow_delete: bool = False
+    action_max_file_bytes: int = 500000
 
     local_model_name: str = "local-lite-v1"
 
@@ -84,4 +92,6 @@ def get_settings() -> Settings:
     settings.calibration_heuristics_dir.mkdir(parents=True, exist_ok=True)
     settings.calibration_weights_dir.mkdir(parents=True, exist_ok=True)
     settings.calibration_profiles_dir.mkdir(parents=True, exist_ok=True)
+    settings.action_workspace_root.mkdir(parents=True, exist_ok=True)
+    settings.action_backup_dir.mkdir(parents=True, exist_ok=True)
     return settings
