@@ -51,6 +51,62 @@ MMO_CORE_SRC_HINTS = (
     "/src/events",
 )
 
+GENERIC_CODE_DIR_HINTS = (
+    "/src/",
+    "/app/",
+    "/assets/",
+    "/scripts/",
+    "/plugins/",
+    "/packages/",
+    "/data/",
+)
+
+LOW_SIGNAL_DIR_HINTS = (
+    "/docs/",
+    "/doc/",
+    "/examples/",
+    "/example/",
+    "/samples/",
+    "/sample/",
+    "/benchmarks/",
+    "/benchmark/",
+    "/tests/",
+    "/test/",
+)
+
+DOMAIN_CODE_EXTENSIONS = {
+    ".py",
+    ".lua",
+    ".md",
+    ".txt",
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".cs",
+    ".java",
+    ".kt",
+    ".go",
+    ".rs",
+    ".cpp",
+    ".c",
+    ".h",
+    ".hpp",
+    ".cc",
+    ".cxx",
+    ".proto",
+    ".gd",
+    ".shader",
+    ".asmdef",
+    ".uxml",
+}
+
 TOOLING_TERMS = {
     "tool",
     "tools",
@@ -75,6 +131,44 @@ ARCHITECTURE_TERMS = {
     "loadfromxml",
     "mainloader",
     "script systems",
+    "callback",
+    "hook",
+    "runtime",
+    "unity",
+    "assets",
+}
+
+CLASSIC_SCRIPT_TERMS = {
+    "xml",
+    "classic",
+    "legacy",
+    "bind",
+    "binding",
+    "callback",
+    "script",
+    "actions.xml",
+    "talkactions.xml",
+    "movements.xml",
+    "spells.xml",
+    "creaturescripts.xml",
+    "globalevents.xml",
+}
+
+RUNTIME_SCRIPT_TERMS = {
+    "revscripts",
+    "revscriptsys",
+    "register",
+    ":register",
+    "onuse",
+    "onsay",
+    "onthink",
+    "onlogin",
+    "onlogout",
+    "onstepin",
+    "onstepout",
+    "oncastspell",
+    "data/scripts",
+    "assets/scripts",
 }
 
 ACTION_XML_TERMS = {
@@ -166,6 +260,17 @@ DEPENDENCY_NOISE_EXACT = {
     "key",
     "pil",
 }
+
+DEPENDENCY_FILE_PREFIXES = (
+    "src/",
+    "app/",
+    "data/",
+    "assets/",
+    "scripts/",
+    "plugins/",
+    "packages/",
+    "tools/",
+)
 
 
 @dataclass
@@ -621,38 +726,72 @@ class ContextRetrievalEngine:
 
     def _is_domain_source_path(self, value: str) -> bool:
         normalized = "/" + str(value).replace("\\", "/").strip("/").lower() + "/"
-        if normalized.startswith("/src/") or "/src/" in normalized:
-            return True
-        if "/data/scripts/" in normalized:
-            return True
-        return any(segment in normalized for segment in MMO_XML_DIRS)
+        extension = self._path_extension(normalized)
+
+        if "/data/tools/" in normalized or normalized.startswith("/tools/"):
+            return False
+        if any(segment in normalized for segment in LOW_SIGNAL_DIR_HINTS):
+            return False
+
+        if any(segment in normalized for segment in GENERIC_CODE_DIR_HINTS):
+            if extension:
+                return extension in DOMAIN_CODE_EXTENSIONS
+            return normalized.startswith("/src/") or normalized.startswith("/assets/")
+
+        return extension in DOMAIN_CODE_EXTENSIONS
 
     def _domain_path_bonus(self, *, file_path: str, prompt_lower: str) -> float:
         normalized = "/" + str(file_path).replace("\\", "/").strip("/").lower() + "/"
+        extension = self._path_extension(normalized)
         bonus = 0.0
 
+        classic_focus = self._contains_any(prompt_lower, CLASSIC_SCRIPT_TERMS)
+        runtime_focus = self._contains_any(prompt_lower, RUNTIME_SCRIPT_TERMS)
         action_focus = self._contains_any(prompt_lower, ACTION_XML_TERMS | ACTION_REVSCRIPTS_TERMS | ACTION_BIND_TERMS)
         revscripts_focus = self._contains_any(prompt_lower, ACTION_REVSCRIPTS_TERMS)
-        xml_focus = self._contains_any(prompt_lower, ACTION_XML_TERMS)
+        xml_focus = "xml" in prompt_lower or self._contains_any(prompt_lower, ACTION_XML_TERMS | CLASSIC_SCRIPT_TERMS)
+        architecture_focus = any(term in prompt_lower for term in ARCHITECTURE_TERMS) or classic_focus or runtime_focus
 
         if "/src/" in normalized:
             bonus += 0.16
+        if "/app/" in normalized:
+            bonus += 0.12
+        if "/assets/" in normalized:
+            bonus += 0.15
+        if "/scripts/" in normalized:
+            bonus += 0.10
         if "/data/scripts/" in normalized:
             bonus += 0.20
         if any(segment in normalized for segment in MMO_XML_DIRS):
             bonus += 0.14
+        if extension in {".cs", ".cpp", ".h", ".hpp", ".lua", ".ts", ".tsx", ".js", ".py"}:
+            bonus += 0.05
+
+        if any(segment in normalized for segment in LOW_SIGNAL_DIR_HINTS):
+            if not any(term in prompt_lower for term in TOOLING_TERMS):
+                bonus -= 0.12
 
         if "/data/tools/" in normalized or normalized.startswith("/tools/"):
             if not any(term in prompt_lower for term in TOOLING_TERMS):
                 bonus -= 0.22
 
-        if any(term in prompt_lower for term in ARCHITECTURE_TERMS):
+        if architecture_focus:
             if any(hint in normalized for hint in MMO_CORE_SRC_HINTS):
                 bonus += 0.24
-            if "/data/scripts/" in normalized:
+            if "/scripts/" in normalized or "/assets/" in normalized:
                 bonus += 0.12
             if any(segment in normalized for segment in MMO_XML_DIRS):
                 bonus += 0.08
+
+        if classic_focus:
+            if extension == ".xml":
+                bonus += 0.12
+            if any(segment in normalized for segment in MMO_XML_DIRS):
+                bonus += 0.10
+
+        if runtime_focus:
+            if "/scripts/" in normalized and extension in {".lua", ".cs", ".ts", ".tsx", ".js", ".py"}:
+                bonus += 0.12
 
         if action_focus:
             if "/data/actions/actions.xml/" in normalized:
@@ -691,6 +830,12 @@ class ContextRetrievalEngine:
         lower = value.lower()
         return any(term in lower for term in terms)
 
+    def _path_extension(self, normalized_with_slashes: str) -> str:
+        normalized = normalized_with_slashes.strip("/")
+        if not normalized:
+            return ""
+        return Path(normalized).suffix.lower()
+
     def _sanitize_dependencies(self, dependencies: set[str]) -> list[str]:
         curated: list[str] = []
 
@@ -702,11 +847,7 @@ class ContextRetrievalEngine:
                 continue
             if lower.startswith("file:"):
                 normalized_file = lower.removeprefix("file:").replace("\\", "/")
-                if not (
-                    normalized_file.startswith("src/")
-                    or normalized_file.startswith("data/")
-                    or normalized_file.startswith("tools/")
-                ):
+                if not any(normalized_file.startswith(prefix) for prefix in DEPENDENCY_FILE_PREFIXES):
                     continue
             if lower.startswith("__"):
                 continue
@@ -735,15 +876,14 @@ class ContextRetrievalEngine:
                 parts = normalized.split("/")
                 if len(parts) >= 2 and parts[1]:
                     second = parts[1].lower()
-                    if second in {
-                        "actions",
-                        "scripts",
-                        "events",
-                        "spells",
-                        "movements",
-                        "talkactions",
-                        "creaturescripts",
-                        "globalevents",
+                    if second not in {
+                        "tools",
+                        "build",
+                        "cmake",
+                        "metadata",
+                        "tmp",
+                        "temp",
+                        "cache",
                     }:
                         result.add(f"data/{second}")
                 continue

@@ -161,3 +161,73 @@ void ScriptingManager::loadScriptSystems() {
         dependencies_lower = {str(item).lower() for item in retrieval.assembled.get("dependencies", [])}
         assert "uniqueid" in dependencies_lower
         assert ":register" in dependencies_lower
+
+
+def test_ingestion_pipeline_extracts_non_action_classic_and_runtime_markers() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_path = root / "MMO"
+
+        write_text(
+            project_path / "data" / "talkactions" / "talkactions.xml",
+            """
+<talkactions>
+    <talkaction words="/rank" script="admin/rank.lua" />
+</talkactions>
+""".strip(),
+        )
+        write_text(
+            project_path / "data" / "talkactions" / "scripts" / "admin" / "rank.lua",
+            """
+function onSay(player, words, param)
+    return false
+end
+""".strip(),
+        )
+        write_text(
+            project_path / "data" / "scripts" / "talkactions" / "rank.lua",
+            """
+local rankTalkAction = TalkAction("/rank")
+
+function rankTalkAction.onSay(player, words, param)
+    return false
+end
+
+rankTalkAction:register()
+""".strip(),
+        )
+
+        pipeline = ProjectIngestionPipeline(output_projects_root=root / ".brasa")
+        report = pipeline.run(project_path=project_path, workspace_id="mmo_workspace")
+        assert report.scanned_files == 3
+
+        output_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "MMO"
+
+        xml_meta = read_json(
+            output_root / "metadata" / "files" / "data" / "talkactions" / "talkactions.meta.json"
+        )
+        classic_script_meta = read_json(
+            output_root / "metadata" / "files" / "data" / "talkactions" / "scripts" / "admin" / "rank.meta.json"
+        )
+        runtime_meta = read_json(
+            output_root / "metadata" / "files" / "data" / "scripts" / "talkactions" / "rank.meta.json"
+        )
+
+        xml_deps = set(xml_meta["dependencies"])
+        assert {"words", "script", "script:admin/rank.lua", "classic-xml-bind", "classic-talkactions-bind"} <= xml_deps
+
+        classic_script_deps = set(classic_script_meta["dependencies"])
+        assert {"onSay", "classic-script-callback", "classic-talkactions-script"} <= classic_script_deps
+
+        runtime_deps = set(runtime_meta["dependencies"])
+        assert {"TalkAction()", ":register", "runtime-script-file", "runtime-script-register", "onSay"} <= runtime_deps
+
+        xml_summary = (
+            output_root / "summaries" / "files" / "data" / "talkactions" / "talkactions.summary.md"
+        ).read_text(encoding="utf-8")
+        runtime_summary = (
+            output_root / "summaries" / "files" / "data" / "scripts" / "talkactions" / "rank.summary.md"
+        ).read_text(encoding="utf-8")
+
+        assert "classic XML bindings" in xml_summary
+        assert "runtime script handlers" in runtime_summary

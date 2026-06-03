@@ -18,9 +18,11 @@ from app.knowledge.models import (
 
 DEFAULT_EXTENSIONS = {
     ".py",
+    ".lua",
     ".md",
     ".txt",
     ".json",
+    ".xml",
     ".yaml",
     ".yml",
     ".toml",
@@ -37,16 +39,20 @@ DEFAULT_EXTENSIONS = {
     ".cpp",
     ".c",
     ".h",
+    ".hpp",
+    ".shader",
+    ".asmdef",
+    ".uxml",
 }
 
 EXCLUDED_DIRS = {
     ".git",
+    ".brasa",
     ".venv",
     "venv",
     "node_modules",
     "dist",
     "build",
-    "data",
     "__pycache__",
     ".pytest_cache",
 }
@@ -835,6 +841,12 @@ class KnowledgeCompiler:
             relative = path.relative_to(self.project_root)
         except ValueError:
             return True
+
+        try:
+            path.relative_to(self.output_dir)
+            return True
+        except ValueError:
+            pass
 
         for part in relative.parts:
             if part in EXCLUDED_DIRS:

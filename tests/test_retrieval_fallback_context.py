@@ -76,3 +76,64 @@ def test_retrieval_falls_back_to_src_artifacts_when_lexical_match_is_low() -> No
         assert packet.snippets
         assert retrieval.assembled["context_packet"]
         assert any(str(item.source).startswith("artifact:file:src/") for item in packet.snippets)
+
+
+def test_retrieval_falls_back_to_unity_assets_when_lexical_match_is_low() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "unity_workspace" / "PokemonUnity"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        write_json(
+            metadata_root / "Assets" / "Scripts" / "Combat" / "AttackController.meta.json",
+            {
+                "path": "Assets/Scripts/Combat/AttackController.cs",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["Animator", "DamageService"],
+                "symbols": ["AttackController"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "Assets" / "Scripts" / "Combat" / "AttackController.summary.md",
+            "# attack controller\nhandles runtime combat flow and animation triggers\n",
+        )
+
+        write_json(
+            metadata_root / "Docs" / "combat_overview.meta.json",
+            {
+                "path": "Docs/combat_overview.md",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": [],
+                "symbols": ["CombatOverview"],
+                "confidence": 0.8,
+            },
+        )
+        write_text(
+            summaries_root / "Docs" / "combat_overview.summary.md",
+            "# combat docs\ndocumentation only\n",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=3000,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="unity_workspace",
+            project_id=scoped_project_id(project_id="PokemonUnity", workspace_id="unity_workspace"),
+            user_id="u1",
+            prompt="consulta abstrata sem nome de arquivo nem classe",
+        )
+
+        packet, retrieval = engine.assemble(envelope)
+
+        assert packet.snippets
+        assert retrieval.assembled["context_packet"]
+        assert any(str(item.source).startswith("artifact:file:Assets/Scripts/") for item in packet.snippets)
+
+        systems_lower = {str(item).lower() for item in retrieval.assembled.get("relevant_systems", [])}
+        assert "assets" in systems_lower

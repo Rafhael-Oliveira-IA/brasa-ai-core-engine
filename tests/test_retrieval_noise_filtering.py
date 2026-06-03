@@ -353,3 +353,98 @@ def test_action_xml_and_revscripts_models_are_prioritized_for_action_architectur
         systems_lower = [str(item).lower() for item in systems]
         assert "data/actions" in systems_lower
         assert "data/scripts" in systems_lower
+
+
+def test_classic_xml_and_runtime_models_are_prioritized_for_talkactions_query() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        write_json(
+            metadata_root / "data" / "talkactions" / "talkactions.meta.json",
+            {
+                "path": "data/talkactions/talkactions.xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["words", "script", "xml-script-binding"],
+                "symbols": ["talkaction"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "talkactions" / "talkactions.summary.md",
+            "# talkactions xml\nclassic xml binds words/scripts for chat callbacks\n",
+        )
+
+        write_json(
+            metadata_root / "data" / "talkactions" / "scripts" / "admin" / "rank.meta.json",
+            {
+                "path": "data/talkactions/scripts/admin/rank.lua",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["onSay", "classic-script-callback"],
+                "symbols": ["onSay"],
+                "confidence": 0.88,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "talkactions" / "scripts" / "admin" / "rank.summary.md",
+            "# rank script\nclassic xml callback script with onSay\n",
+        )
+
+        write_json(
+            metadata_root / "data" / "scripts" / "talkactions" / "rank.meta.json",
+            {
+                "path": "data/scripts/talkactions/rank.lua",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["TalkAction()", ":register", "onSay", "runtime-script-register"],
+                "symbols": ["rankTalkAction", "onSay"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "scripts" / "talkactions" / "rank.summary.md",
+            "# rank revscript\nruntime TalkAction registration without talkactions.xml\n",
+        )
+
+        write_json(
+            metadata_root / "data" / "tools" / "chat_cleaner.meta.json",
+            {
+                "path": "data/tools/chat_cleaner.py",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["argparse", "os"],
+                "symbols": ["ChatCleaner"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "tools" / "chat_cleaner.summary.md",
+            "# chat cleaner\nmaintenance helper script\n",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=5000,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt="qual a diferenca entre talkactions xml classico e revscripts com register?",
+        )
+
+        packet, retrieval = engine.assemble(envelope)
+        assert packet.snippets
+
+        top_sources = [item.source for item in packet.snippets[:8]]
+        assert "artifact:file:data/talkactions/talkactions.xml" in top_sources
+        assert "artifact:file:data/scripts/talkactions/rank.lua" in top_sources
+        assert not any(source.startswith("artifact:file:data/tools/") for source in top_sources[:3])
+
+        systems = retrieval.assembled.get("relevant_systems", [])
+        systems_lower = [str(item).lower() for item in systems]
+        assert "data/talkactions" in systems_lower
+        assert "data/scripts" in systems_lower

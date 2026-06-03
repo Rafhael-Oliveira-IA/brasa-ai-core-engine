@@ -149,3 +149,35 @@ public class InventoryManager {
 
         for node_id in tracked_nodes:
             assert after[node_id]["generation"] > before[node_id]["generation"]
+
+
+def test_knowledge_compiler_includes_data_lua_and_xml_by_default() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+
+        write_text(
+            root / "data" / "talkactions" / "talkactions.xml",
+            "<talkactions><talkaction words=\"/rank\" script=\"admin/rank.lua\" /></talkactions>",
+        )
+        write_text(
+            root / "data" / "scripts" / "talkactions" / "rank.lua",
+            "local rank = TalkAction(\"/rank\")\nrank:register()",
+        )
+
+        output_dir = root / "artifacts" / "knowledge"
+        state_file = output_dir / "state.json"
+
+        compiler = KnowledgeCompiler(
+            project_root=root,
+            output_dir=output_dir,
+            state_file=state_file,
+        )
+
+        report = compiler.sync()
+        assert report.scanned_files == 2
+
+        state = load_state(state_file)
+        nodes = state["nodes"]
+
+        assert "file:data/talkactions/talkactions.xml" in nodes
+        assert "file:data/scripts/talkactions/rank.lua" in nodes
