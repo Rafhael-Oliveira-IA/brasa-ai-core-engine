@@ -17,6 +17,30 @@ Implementacao local-first para rodar rapido, com evolucao incremental e auditave
 - Adapter Alibaba OpenAI-compatible opcional.
 - Compilador cognitivo hierarquico incremental.
 
+## Workspace Isolation
+
+Workspaces suportados por padrao:
+
+- `mmo_workspace`
+- `unity_workspace`
+- `brasa_ai_workspace`
+
+Isolamento aplicado em:
+
+- ingestion artifacts
+- retrieval context
+- watcher snapshots
+- memory scoping (via `workspace_id::project_id`)
+
+Layout de artefatos isolados:
+
+- `.brasa/workspaces/<workspace>/<project>/raw`
+- `.brasa/workspaces/<workspace>/<project>/summaries`
+- `.brasa/workspaces/<workspace>/<project>/memories`
+- `.brasa/workspaces/<workspace>/<project>/graphs`
+- `.brasa/workspaces/<workspace>/<project>/contexts`
+- `.brasa/workspaces/<workspace>/<project>/metadata`
+
 ## Context Compression Hierarquico
 
 Fluxo de compilacao:
@@ -56,6 +80,7 @@ uvicorn app.main:app --reload
 
 - `GET /health`
 - `POST /v1/chat`
+- `POST /v1/tasks/execute`
 - `POST /v1/memory`
 - `GET /v1/memory/search`
 - `POST /v1/reflection/run`
@@ -65,6 +90,10 @@ uvicorn app.main:app --reload
 - `POST /v1/ingestion/run`
 - `POST /v1/context/assemble`
 - `POST /v1/watcher/check`
+- `POST /v1/evaluation/run`
+- `GET /v1/evaluation/recent`
+
+Observacao: endpoints cognitivos aceitam `workspace_id` no payload (default `brasa_ai_workspace`).
 
 ## Artefatos gerados
 
@@ -96,7 +125,7 @@ Exemplo de execucao via API:
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/ingestion/run \
 	-H "Content-Type: application/json" \
-	-d '{"project_path":"D:/Projects/MMO","force":false}'
+	-d '{"workspace_id":"mmo_workspace","project_path":"D:/Projects/MMO","force":false}'
 ```
 
 ## Context Retrieval Engine
@@ -107,6 +136,42 @@ curl -X POST http://127.0.0.1:8000/v1/ingestion/run \
 - sistemas relevantes
 - expansao de dependencias
 - riscos e compressao por budget
+
+Retrieval hibrido atual:
+
+- lexical relevance
+- Alibaba embeddings (`text-embedding-v4`)
+- graph expansion
+- freshness/confidence/importance weighting
+
+Quando `ALIBABA_API_KEY` esta configurada, o runtime usa embeddings Alibaba com cache local para melhorar ranking semantico.
+
+## Cognitive Task Runtime (Phase 3 bootstrap)
+
+`POST /v1/tasks/execute` executa tarefas cognitivas tipadas com pipeline observavel.
+
+Tipos iniciais:
+
+- `chat`
+- `summarize`
+- `reasoning`
+- `reflection`
+- `repair`
+- `planning`
+- `architecture`
+- `debugging`
+- `generation`
+
+Pipeline atual (runtime local):
+
+- intent analysis
+- context retrieval
+- graph expansion
+- reasoning (router + provider)
+- memory update
+- optional reflection
+
+`POST /v1/chat` continua disponivel para compatibilidade e agora funciona como wrapper para `task_type=chat` quando o task runtime esta habilitado.
 
 ## Watcher Incremental
 
@@ -133,9 +198,56 @@ ALIBABA_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 ALIBABA_REGION_BASE_URLS=
 ALIBABA_MAX_RETRIES=2
 ALIBABA_RETRY_BACKOFF_SECONDS=0.35
+ALIBABA_EMBEDDING_ENABLED=true
+ALIBABA_EMBEDDING_MODEL=text-embedding-v4
+ALIBABA_EMBEDDING_TIMEOUT_SECONDS=25
+ALIBABA_EMBEDDING_MAX_BATCH_SIZE=16
 ```
 
 Observacao: `ALIBABA_REGION_BASE_URLS` aceita uma lista separada por virgula para fallback de regiao.
+
+## Evaluation Engine
+
+`POST /v1/evaluation/run` calcula metricas operacionais a partir de traces do runtime:
+
+- retrieval precision
+- hallucination rate (proxy)
+- stale context rate
+- architectural consistency
+- token efficiency
+- reasoning success
+
+`GET /v1/evaluation/recent` retorna os relatarios de avaliacao mais recentes.
+
+## Golden Cognitive Tests
+
+Benchmark cognitivo inicial implementado em:
+
+- `tests/golden/golden_cognitive_cases.json` (20 queries)
+- `tests/test_golden_cognitive_benchmark.py`
+
+Cada caso define:
+
+- expected systems
+- expected files
+- expected dependencies
+- expected concepts
+
+Metricas validadas no benchmark:
+
+- file precision
+- file recall
+- dependency recall
+- system hit rate
+- concept hit rate
+
+Execucao:
+
+```bash
+python -m pytest -q tests/test_golden_cognitive_benchmark.py
+```
+
+Esse benchmark marca o inicio da fase cientifica: calibrar retrieval/context/reasoning/evaluation antes de adicionar novas features.
 
 ## Evolucao recomendada
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from time import perf_counter
 from app.contracts import ContextPacket, ContextSnippet, RequestEnvelope, RetrievalResult
 from app.knowledge.graph_engine import KnowledgeGraphEngine
 from app.memory.repository import MemoryRepository
+from app.workspace import resolve_project_root, split_scoped_project_id
 
 
 @dataclass
@@ -22,11 +24,19 @@ class RetrievalCandidate:
     dependencies: list[str]
     candidate_type: str
     modified_at: datetime | None = None
+    semantic_score: float = 0.0
+
+    @property
+    def blended_relevance_score(self) -> float:
+        if self.semantic_score > 0.0:
+            blended = self.relevance_score * 0.45 + self.semantic_score * 0.55
+            return max(0.0, min(1.0, round(blended, 4)))
+        return self.relevance_score
 
     @property
     def final_score(self) -> float:
         weighted = (
-            self.relevance_score * 0.50
+            self.blended_relevance_score * 0.50
             + self.freshness_score * 0.15
             + self.confidence_score * 0.20
             + self.importance_score * 0.15
@@ -46,17 +56,23 @@ class ContextRetrievalEngine:
         project_artifacts_root: Path,
         max_chars: int = 3500,
         knowledge_compiler: object | None = None,
+        embedding_client: object | None = None,
     ) -> None:
         self.memory_repository = memory_repository
         self.project_artifacts_root = project_artifacts_root
         self.max_chars = max_chars
         self.knowledge_compiler = knowledge_compiler
+        self.embedding_client = embedding_client
         self.graph_engine = KnowledgeGraphEngine(project_artifacts_root=self.project_artifacts_root)
 
     def assemble(self, envelope: RequestEnvelope) -> tuple[ContextPacket, RetrievalResult]:
         started = perf_counter()
         intent_terms = self._intent_terms(envelope.prompt)
         user_intent = self._detect_user_intent(envelope.prompt)
+        workspace_id, plain_project_id = split_scoped_project_id(
+            envelope.project_id,
+            fallback_workspace_id=envelope.workspace_id,
+        )
 
         memories = self.memory_repository.search(
             project_id=envelope.project_id,
@@ -70,13 +86,20 @@ class ContextRetrievalEngine:
         candidates.extend(self._knowledge_candidates(envelope.prompt, intent_terms))
 
         artifact_candidates, direct_dependencies, recent_changes = self._artifact_candidates(
-            project_id=envelope.project_id,
+            project_id=plain_project_id,
+            workspace_id=workspace_id,
             intent_terms=intent_terms,
         )
         candidates.extend(artifact_candidates)
 
+        semantic_info = self._apply_semantic_scores(
+            prompt=envelope.prompt,
+            candidates=candidates,
+        )
+
         graph_expansion = self.graph_engine.expand(
-            project_id=envelope.project_id,
+            project_id=plain_project_id,
+            workspace_id=workspace_id,
             seed_terms=intent_terms,
             max_depth=2,
             max_nodes=80,
@@ -95,6 +118,8 @@ class ContextRetrievalEngine:
                 score=item.final_score,
                 scores={
                     "relevance_score": item.relevance_score,
+                    "semantic_score": item.semantic_score,
+                    "blended_relevance_score": item.blended_relevance_score,
                     "freshness_score": item.freshness_score,
                     "confidence_score": item.confidence_score,
                     "importance_score": item.importance_score,
@@ -115,6 +140,8 @@ class ContextRetrievalEngine:
                 "score": item.final_score,
                 "scores": {
                     "relevance_score": item.relevance_score,
+                    "semantic_score": item.semantic_score,
+                    "blended_relevance_score": item.blended_relevance_score,
                     "freshness_score": item.freshness_score,
                     "confidence_score": item.confidence_score,
                     "importance_score": item.importance_score,
@@ -135,6 +162,10 @@ class ContextRetrievalEngine:
         architecture_notes = [str(item) for item in graph_expansion.get("architecture_notes", [])]
         architecture_notes.append(f"hot_context={len(hot_context)}")
         architecture_notes.append(f"cold_knowledge={len(cold_knowledge)}")
+        if semantic_info.get("enabled"):
+            architecture_notes.append(
+                f"semantic_retrieval={semantic_info.get('status')}:{semantic_info.get('ranked_candidates', 0)}"
+            )
 
         risks = self._build_risk_analysis(selected=selected, dropped=dropped)
         compression_payload = {
@@ -146,6 +177,8 @@ class ContextRetrievalEngine:
 
         assembled = {
             "query": envelope.prompt,
+            "workspace_id": workspace_id,
+            "project_id": plain_project_id,
             "user_intent": user_intent,
             "relevant_systems": sorted(item for item in relevant_systems if item),
             "dependencies": sorted(item for item in dependencies if item),
@@ -156,6 +189,7 @@ class ContextRetrievalEngine:
             "hot_context": hot_context,
             "cold_knowledge": cold_knowledge,
             "compression": compression_payload,
+            "semantic_retrieval": semantic_info,
             # Backward compatible aliases for existing callers/tests.
             "contexts": context_packet,
             "memories": [entry.id for entry in memories],
@@ -195,6 +229,55 @@ class ContextRetrievalEngine:
             )
 
         return candidates
+
+    def _apply_semantic_scores(
+        self,
+        *,
+        prompt: str,
+        candidates: list[RetrievalCandidate],
+    ) -> dict[str, object]:
+        if self.embedding_client is None or not candidates:
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "ranked_candidates": 0,
+            }
+
+        texts = [prompt]
+        texts.extend(self._embedding_text_for_candidate(item) for item in candidates)
+
+        try:
+            vectors = self.embedding_client.embed_texts(texts)
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "status": "unavailable",
+                "ranked_candidates": 0,
+                "reason": str(exc),
+            }
+
+        if len(vectors) != len(texts):
+            return {
+                "enabled": True,
+                "status": "degraded",
+                "ranked_candidates": 0,
+                "reason": "vector_count_mismatch",
+            }
+
+        query_vector = vectors[0]
+        ranked = 0
+
+        for candidate, vector in zip(candidates, vectors[1:], strict=False):
+            semantic_score = self._cosine_similarity(query_vector, vector)
+            if semantic_score > 0.0:
+                candidate.semantic_score = semantic_score
+                ranked += 1
+
+        return {
+            "enabled": True,
+            "status": "ok",
+            "ranked_candidates": ranked,
+        }
 
     def _knowledge_candidates(self, prompt: str, terms: set[str]) -> list[RetrievalCandidate]:
         if self.knowledge_compiler is None:
@@ -242,10 +325,16 @@ class ContextRetrievalEngine:
         self,
         *,
         project_id: str,
+        workspace_id: str | None,
         intent_terms: set[str],
     ) -> tuple[list[RetrievalCandidate], set[str], list[str]]:
-        metadata_root = self.project_artifacts_root / project_id / "metadata" / "files"
-        summary_root = self.project_artifacts_root / project_id / "summaries" / "files"
+        project_root = resolve_project_root(
+            artifacts_base_root=self.project_artifacts_root,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        )
+        metadata_root = project_root / "metadata" / "files"
+        summary_root = project_root / "summaries" / "files"
 
         if not metadata_root.exists():
             return [], set(), []
@@ -388,6 +477,30 @@ class ContextRetrievalEngine:
                 hits += 1
 
         return max(0.0, min(1.0, hits / max(1, len(terms))))
+
+    def _embedding_text_for_candidate(self, candidate: RetrievalCandidate) -> str:
+        dependency_text = ", ".join(candidate.dependencies[:20])
+        content = candidate.content[:900].replace("\n", " ").strip()
+        return f"source={candidate.source};deps={dependency_text};content={content}"
+
+    def _cosine_similarity(self, left: list[float], right: list[float]) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+
+        dot = 0.0
+        left_norm = 0.0
+        right_norm = 0.0
+        for left_item, right_item in zip(left, right, strict=False):
+            dot += left_item * right_item
+            left_norm += left_item * left_item
+            right_norm += right_item * right_item
+
+        if left_norm <= 0.0 or right_norm <= 0.0:
+            return 0.0
+
+        cosine = dot / (math.sqrt(left_norm) * math.sqrt(right_norm))
+        normalized = (cosine + 1.0) / 2.0
+        return max(0.0, min(1.0, round(normalized, 4)))
 
     def _derive_systems_from_sources(self, selected: list[RetrievalCandidate]) -> set[str]:
         systems: set[str] = set()

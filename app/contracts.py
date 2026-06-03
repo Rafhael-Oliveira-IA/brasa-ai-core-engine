@@ -27,11 +27,41 @@ class MemoryScope(str, Enum):
 
 class RequestEnvelope(BaseModel):
     request_id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "brasa_ai_workspace"
     project_id: str
     user_id: str
     prompt: str = Field(min_length=1)
     tier_hint: ModelTier | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskType(str, Enum):
+    CHAT = "chat"
+    SUMMARIZE = "summarize"
+    REASONING = "reasoning"
+    REFLECTION = "reflection"
+    REPAIR = "repair"
+    PLANNING = "planning"
+    ARCHITECTURE = "architecture"
+    DEBUGGING = "debugging"
+    GENERATION = "generation"
+
+
+class TaskExecutionOptions(BaseModel):
+    persist_memory: bool = True
+    run_reflection: bool = False
+
+
+class TaskRequest(BaseModel):
+    task_id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    task_type: TaskType = TaskType.CHAT
+    prompt: str = Field(min_length=1)
+    tier_hint: ModelTier | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    options: TaskExecutionOptions = Field(default_factory=TaskExecutionOptions)
 
 
 class ContextSnippet(BaseModel):
@@ -61,6 +91,7 @@ class MemoryEntry(BaseModel):
 
 
 class MemoryCreateRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
     project_id: str
     user_id: str
     scope: MemoryScope = MemoryScope.EPISODIC
@@ -87,6 +118,7 @@ class ContextAssembleResponse(BaseModel):
 
 
 class WatcherCheckRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
     project_path: str
     auto_rebuild: bool = True
 
@@ -148,6 +180,46 @@ class ChatResponse(BaseModel):
     route: RouteDecision
     context_sources: list[str]
     trace_id: str
+
+
+class TaskStageResult(BaseModel):
+    stage: str
+    status: str = "ok"
+    took_ms: int = 0
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskResponse(BaseModel):
+    task_id: str
+    task_type: TaskType
+    answer: str
+    confidence: float
+    route: RouteDecision
+    context_sources: list[str] = Field(default_factory=list)
+    trace_id: str
+    pipeline: list[TaskStageResult] = Field(default_factory=list)
+    retrieval: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationRunRequest(BaseModel):
+    limit: int = Field(default=300, ge=20, le=5000)
+    workspace_id: str | None = None
+    project_id: str | None = None
+    user_id: str | None = None
+
+
+class EvaluationReport(BaseModel):
+    report_id: str = Field(default_factory=lambda: str(uuid4()))
+    generated_at: datetime = Field(default_factory=utc_now)
+    workspace_id: str | None = None
+    project_id: str | None = None
+    user_id: str | None = None
+    sample_size: int = 0
+    retrieval_samples: int = 0
+    route_samples: int = 0
+    metrics: dict[str, float] = Field(default_factory=dict)
+    totals: dict[str, float] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
 
 
 class ReflectionTask(BaseModel):

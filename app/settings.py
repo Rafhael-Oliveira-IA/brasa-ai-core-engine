@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     sqlite_path: Path = BASE_DIR / "data" / "memory.db"
     trace_file: Path = BASE_DIR / "data" / "traces.jsonl"
     reflection_dir: Path = BASE_DIR / "data" / "reflection_reports"
+    evaluation_dir: Path = BASE_DIR / "data" / "evaluations"
     knowledge_dir: Path = BASE_DIR / "data" / "knowledge"
     knowledge_state_file: Path = BASE_DIR / "data" / "knowledge" / "state.json"
     knowledge_max_file_bytes: int = 300000
@@ -33,6 +34,11 @@ class Settings(BaseSettings):
     alibaba_model_flash: str = "qwen-turbo-latest"
     alibaba_model_plus: str = "qwen-plus-latest"
     alibaba_model_max: str = "qwen-max-latest"
+    alibaba_embedding_enabled: bool = True
+    alibaba_embedding_model: str = "text-embedding-v4"
+    alibaba_embedding_timeout_seconds: int = 25
+    alibaba_embedding_max_batch_size: int = 16
+    alibaba_embedding_cache_file: Path = BASE_DIR / "data" / "knowledge" / "embeddings_cache.json"
 
     max_escalation_depth: int = 3
     request_budget_usd: float = 0.20
@@ -52,8 +58,10 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.reflection_dir.mkdir(parents=True, exist_ok=True)
+    settings.evaluation_dir.mkdir(parents=True, exist_ok=True)
     settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
     settings.knowledge_state_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.alibaba_embedding_cache_file.parent.mkdir(parents=True, exist_ok=True)
     settings.trace_file.parent.mkdir(parents=True, exist_ok=True)
     settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     return settings
