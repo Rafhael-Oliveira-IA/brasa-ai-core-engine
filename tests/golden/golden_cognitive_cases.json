@@ -1,162 +1,87 @@
-[
-  {
-    "id": "q01",
-    "query": "como funciona inventory?",
-    "expected_systems": ["Inventory"],
-    "expected_files": ["Inventory/InventoryManager.cs"],
-    "expected_dependencies": ["ItemDatabase"],
-    "expected_concepts": ["inventory", "item"]
-  },
-  {
-    "id": "q02",
-    "query": "onde packets sao registrados?",
-    "expected_systems": ["Networking"],
-    "expected_files": ["Networking/PacketRegistry.cs"],
-    "expected_dependencies": ["PacketDeserializer"],
-    "expected_concepts": ["packet", "handler"]
-  },
-  {
-    "id": "q03",
-    "query": "qual sistema sincroniza player state?",
-    "expected_systems": ["Gameplay"],
-    "expected_files": ["Gameplay/PlayerStateSync.cs"],
-    "expected_dependencies": ["TickScheduler"],
-    "expected_concepts": ["player state", "synchronize"]
-  },
-  {
-    "id": "q04",
-    "query": "como economia depende do inventory?",
-    "expected_systems": ["Economy"],
-    "expected_files": ["Economy/EconomyService.cs"],
-    "expected_dependencies": ["InventoryManager"],
-    "expected_concepts": ["economy", "pricing"]
-  },
-  {
-    "id": "q05",
-    "query": "quais modulos podem causar race condition?",
-    "expected_systems": ["Gameplay"],
-    "expected_files": ["Gameplay/RaceConditionGuard.cs"],
-    "expected_dependencies": ["LockManager"],
-    "expected_concepts": ["race condition", "lock"]
-  },
-  {
-    "id": "q06",
-    "query": "quem persiste player state?",
-    "expected_systems": ["Persistence"],
-    "expected_files": ["Persistence/PlayerStateRepository.cs"],
-    "expected_dependencies": ["SqliteStore"],
-    "expected_concepts": ["persist", "repository"]
-  },
-  {
-    "id": "q07",
-    "query": "como snapshots sao serializados?",
-    "expected_systems": ["Persistence"],
-    "expected_files": ["Persistence/SnapshotSerializer.cs"],
-    "expected_dependencies": [],
-    "expected_concepts": ["snapshot", "serialize"]
-  },
-  {
-    "id": "q08",
-    "query": "onde eventos de item sao publicados?",
-    "expected_systems": ["Inventory"],
-    "expected_files": ["Inventory/InventoryEvents.cs"],
-    "expected_dependencies": ["EventBus"],
-    "expected_concepts": ["event", "item_removed"]
-  },
-  {
-    "id": "q09",
-    "query": "como packets chegam no gameplay?",
-    "expected_systems": ["Networking"],
-    "expected_files": ["Networking/PacketRouter.cs"],
-    "expected_dependencies": ["PacketRegistry"],
-    "expected_concepts": ["route", "packet"]
-  },
-  {
-    "id": "q10",
-    "query": "quem registra transacoes economicas?",
-    "expected_systems": ["Economy"],
-    "expected_files": ["Economy/LedgerRepository.cs"],
-    "expected_dependencies": ["SqliteStore"],
-    "expected_concepts": ["ledger", "transaction"]
-  },
-  {
-    "id": "q11",
-    "query": "fluxo de add item ate economia",
-    "expected_systems": ["Inventory", "Economy"],
-    "expected_files": ["Inventory/InventoryManager.cs"],
-    "expected_dependencies": ["EconomyService"],
-    "expected_concepts": ["add item", "economy"]
-  },
-  {
-    "id": "q12",
-    "query": "dependencia entre inventory e persistence",
-    "expected_systems": ["Inventory", "Persistence"],
-    "expected_files": ["Persistence/PlayerStateRepository.cs"],
-    "expected_dependencies": ["SnapshotSerializer"],
-    "expected_concepts": ["inventory", "snapshot"]
-  },
-  {
-    "id": "q13",
-    "query": "qual modulo reduz corridas de atualizacao",
-    "expected_systems": ["Gameplay"],
-    "expected_files": ["Gameplay/RaceConditionGuard.cs"],
-    "expected_dependencies": ["LockManager"],
-    "expected_concepts": ["guard", "race"]
-  },
-  {
-    "id": "q14",
-    "query": "quem controla tick de sync",
-    "expected_systems": ["Gameplay"],
-    "expected_files": ["Gameplay/PlayerStateSync.cs"],
-    "expected_dependencies": ["TickScheduler"],
-    "expected_concepts": ["tick", "sync"]
-  },
-  {
-    "id": "q15",
-    "query": "onde gateway de socket entra",
-    "expected_systems": ["Networking"],
-    "expected_files": ["Networking/PacketRegistry.cs"],
-    "expected_dependencies": ["SocketGateway"],
-    "expected_concepts": ["socket", "registry"]
-  },
-  {
-    "id": "q16",
-    "query": "quem salva snapshot do jogador",
-    "expected_systems": ["Persistence"],
-    "expected_files": ["Persistence/PlayerStateRepository.cs"],
-    "expected_dependencies": ["SnapshotSerializer"],
-    "expected_concepts": ["player", "snapshot"]
-  },
-  {
-    "id": "q17",
-    "query": "como economy calcula preco com inventory",
-    "expected_systems": ["Economy"],
-    "expected_files": ["Economy/EconomyService.cs"],
-    "expected_dependencies": ["InventoryManager"],
-    "expected_concepts": ["pricing", "inventory"]
-  },
-  {
-    "id": "q18",
-    "query": "onde inventory emite item_removed",
-    "expected_systems": ["Inventory"],
-    "expected_files": ["Inventory/InventoryEvents.cs"],
-    "expected_dependencies": ["EventBus"],
-    "expected_concepts": ["item_removed", "event"]
-  },
-  {
-    "id": "q19",
-    "query": "como estado jogador usa packet router",
-    "expected_systems": ["Gameplay", "Networking"],
-    "expected_files": ["Gameplay/PlayerStateSync.cs"],
-    "expected_dependencies": ["PacketRouter"],
-    "expected_concepts": ["player state", "router"]
-  },
-  {
-    "id": "q20",
-    "query": "onde ledger e persistido",
-    "expected_systems": ["Economy", "Persistence"],
-    "expected_files": ["Economy/LedgerRepository.cs"],
-    "expected_dependencies": ["SqliteStore"],
-    "expected_concepts": ["ledger", "persist"]
-  }
-]
+{
+  "projects": [
+    {
+      "workspace_id": "mmo_workspace",
+      "project_path": "F:/POKECONTEST/SERVIDOR - ORIGINAL",
+      "max_cases": 24,
+      "file_extensions": [
+        ".lua",
+        ".hpp",
+        ".h",
+        ".cpp",
+        ".ipp",
+        ".xml",
+        ".json",
+        ".sql",
+        ".py"
+      ],
+      "keywords": [
+        "npc",
+        "spells",
+        "shiny",
+        "kanto",
+        "monster",
+        "talkactions",
+        "movements",
+        "quests",
+        "creaturescripts",
+        "pokemon",
+        "pokedex",
+        "npcbattle",
+        "raids",
+        "market",
+        "anticheat",
+        "opcode",
+        "guild",
+        "teleport",
+        "globalevents",
+        "chatchannels",
+        "migrations"
+      ]
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_path": "F:/BRP_GreenFall_v3/BRP_GreenFall_v4/BRP_GreenFall_v4",
+      "max_cases": 24,
+      "file_extensions": [
+        ".cs",
+        ".prefab",
+        ".unity",
+        ".asset",
+        ".mat",
+        ".shadergraph",
+        ".shadersubgraph",
+        ".hlsl",
+        ".asmdef",
+        ".shader",
+        ".uxml",
+        ".uss",
+        ".inputactions"
+      ],
+      "keywords": [
+        "inventory",
+        "wieldables",
+        "fps",
+        "runtime",
+        "editor",
+        "environment",
+        "vegetation",
+        "scenes",
+        "firearms",
+        "pickup",
+        "savesystem",
+        "damage",
+        "vfx",
+        "postprocessing",
+        "shadergraph",
+        "input",
+        "menu",
+        "behaviours",
+        "workstations",
+        "textmesh"
+      ]
+    }
+  ],
+  "min_keyword_hit_ratio": 1.0,
+  "max_file_bytes": 300000
+}
