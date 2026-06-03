@@ -9,6 +9,7 @@ from pathlib import Path
 from time import perf_counter
 
 from app.contracts import ContextPacket, ContextSnippet, RequestEnvelope, RetrievalResult
+from app.calibration.profiles import CalibrationProfileRegistry
 from app.knowledge.graph_engine import KnowledgeGraphEngine
 from app.memory.repository import MemoryRepository
 from app.workspace import resolve_project_root, split_scoped_project_id
@@ -324,6 +325,7 @@ class ContextRetrievalEngine:
         self.max_chars = max_chars
         self.knowledge_compiler = knowledge_compiler
         self.embedding_client = embedding_client
+        self.profile_registry = CalibrationProfileRegistry()
         self.graph_engine = KnowledgeGraphEngine(project_artifacts_root=self.project_artifacts_root)
 
     def assemble(self, envelope: RequestEnvelope) -> tuple[ContextPacket, RetrievalResult]:
@@ -438,7 +440,7 @@ class ContextRetrievalEngine:
                 f"semantic_retrieval={semantic_info.get('status')}:{semantic_info.get('ranked_candidates', 0)}"
             )
 
-        risks = self._build_risk_analysis(selected=selected, dropped=dropped)
+        risks = self._build_risk_analysis(selected=selected, dropped=dropped, prompt=envelope.prompt)
         compression_payload = {
             "selected_count": len(selected),
             "dropped_count": len(dropped),
@@ -642,6 +644,7 @@ class ContextRetrievalEngine:
             return [], set(), []
 
         prompt_lower = (prompt or "").strip().lower()
+        active_profile = self.profile_registry.aggregate(workspace_id=workspace_id, prompt=prompt_lower)
 
         candidates: list[RetrievalCandidate] = []
         fallback_candidates: list[RetrievalCandidate] = []
@@ -679,7 +682,11 @@ class ContextRetrievalEngine:
             confidence = float(metadata.get("confidence", 0.78))
             confidence = max(0.3, min(1.0, confidence))
             importance = 0.50 + min(0.45, len(direct_deps) * 0.04)
-            importance += self._domain_path_bonus(file_path=file_path, prompt_lower=prompt_lower)
+            importance += self._domain_path_bonus(
+                file_path=file_path,
+                prompt_lower=prompt_lower,
+                profile=active_profile,
+            )
             importance = max(0.05, min(1.0, importance))
 
             candidate = RetrievalCandidate(
@@ -741,7 +748,7 @@ class ContextRetrievalEngine:
 
         return extension in DOMAIN_CODE_EXTENSIONS
 
-    def _domain_path_bonus(self, *, file_path: str, prompt_lower: str) -> float:
+    def _domain_path_bonus(self, *, file_path: str, prompt_lower: str, profile: object | None = None) -> float:
         normalized = "/" + str(file_path).replace("\\", "/").strip("/").lower() + "/"
         extension = self._path_extension(normalized)
         bonus = 0.0
@@ -830,6 +837,19 @@ class ContextRetrievalEngine:
             bonus += 0.08
         if "quest" in prompt_lower and "/src/quests" in normalized:
             bonus += 0.10
+
+        if profile is not None:
+            bonus += float(getattr(profile, "xml_boost", 0.0)) if extension == ".xml" else 0.0
+            if "/scripts/" in normalized:
+                bonus += float(getattr(profile, "scripts_boost", 0.0))
+            if "/assets/" in normalized:
+                bonus += float(getattr(profile, "assets_boost", 0.0))
+            if "/src/" in normalized:
+                bonus += float(getattr(profile, "src_boost", 0.0))
+            if extension in {".shader", ".shadergraph", ".shadersubgraph", ".hlsl"}:
+                bonus += float(getattr(profile, "shader_boost", 0.0))
+            if any(token in normalized for token in {"/network", "protocol", "opcode", "packet"}):
+                bonus += float(getattr(profile, "networking_boost", 0.0))
 
         return bonus
 
@@ -1052,6 +1072,7 @@ class ContextRetrievalEngine:
         *,
         selected: list[RetrievalCandidate],
         dropped: list[RetrievalCandidate],
+        prompt: str,
     ) -> list[str]:
         risks: list[str] = []
 
@@ -1064,6 +1085,10 @@ class ContextRetrievalEngine:
 
         if dropped:
             risks.append(f"Token budget dropped {len(dropped)} context candidates.")
+
+        if self._is_xml_focused_prompt(prompt) and not any(self._is_xml_artifact_candidate(item) for item in selected):
+            risks.append("xml_missing: XML-focused query without XML artifact in selected context.")
+            risks.append("ranking_collision: non-XML candidates dominated XML-focused prompt.")
 
         low_confidence = [item for item in selected if item.confidence_score < 0.50]
         if low_confidence:

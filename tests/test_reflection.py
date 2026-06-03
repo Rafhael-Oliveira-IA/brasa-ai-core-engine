@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.contracts import MemoryEntry, MemoryScope
+from app.contracts import CognitiveFeedbackEntry, CognitiveFeedbackVerdict, CognitiveIssueTag, MemoryEntry, MemoryScope
+from app.feedback.repository import CognitiveFeedbackRepository
 from app.memory.repository import MemoryRepository
 from app.reflection.nightly_reflection import ReflectionService
 
@@ -51,3 +52,36 @@ def test_reflection_compacts_duplicates_and_generates_summary() -> None:
 
         entries = repository.list_recent(project_id="project-1", user_id="user-1", limit=20)
         assert any("Reflection summary" in entry.content for entry in entries)
+
+
+def test_reflection_includes_feedback_issue_notes_when_available() -> None:
+    with TemporaryDirectory() as temp_dir:
+        base_path = Path(temp_dir)
+        repository = MemoryRepository(base_path / "memory.db")
+        feedback_repository = CognitiveFeedbackRepository(base_path / "memory.db")
+        reflection = ReflectionService(
+            repository=repository,
+            report_dir=base_path / "reports",
+            feedback_repository=feedback_repository,
+        )
+
+        feedback_repository.add_entry(
+            CognitiveFeedbackEntry(
+                workspace_id="mmo_workspace",
+                project_id="project-1",
+                user_id="user-1",
+                query="how opcode routing works",
+                verdict=CognitiveFeedbackVerdict.INCORRECT,
+                issues=[
+                    CognitiveIssueTag.RETRIEVAL_INCORRECT,
+                    CognitiveIssueTag.HALLUCINATION,
+                ],
+                notes="wrong files",
+            )
+        )
+
+        report = reflection.run_once(project_id="project-1", user_id="user-1")
+        text = " ".join(report.notes).lower()
+
+        assert "analyzed" in text
+        assert "top feedback issues" in text

@@ -308,6 +308,8 @@ Memory Update
 * Evaluation engine
 * Cognitive telemetry
 * Runtime tracing
+* Cognitive feedback loop API
+* Daily cognitive usage runner
 * MMO-aware ranking
 * Unity-aware ranking
 * FastAPI runtime
@@ -394,6 +396,79 @@ Runs cognition evaluation and retrieves reports.
 
 ---
 
+## Cognitive Feedback Loop
+
+```http id="feedback-loop"
+POST /v1/feedback
+GET /v1/feedback/recent
+```
+
+Collects user verdicts from real usage, including:
+
+* correct / partial / incorrect
+* context_bad
+* xml_missing
+* hallucination
+* retrieval_incorrect
+* compression_bad
+* architectural_loss
+
+These signals feed evaluation and reflection cycles.
+
+---
+
+## Daily Cognitive Usage Dataset
+
+Run daily real-usage query batches and store a proprietary calibration dataset:
+
+* query set: [tools/cognitive_usage_daily_queries.json](tools/cognitive_usage_daily_queries.json)
+* runner: [tools/run_cognitive_usage_phase.py](tools/run_cognitive_usage_phase.py)
+* output: data/evaluations/cognitive_usage/*.jsonl
+
+Example:
+
+python tools/run_cognitive_usage_phase.py
+
+---
+
+## Retrieval Failure Taxonomy
+
+The calibration layer classifies retrieval failures into explicit buckets:
+
+* xml_missing
+* wrong_module
+* wrong_generation
+* stale_summary
+* dependency_noise
+* graph_underexpansion
+* graph_overexpansion
+* compression_loss
+* ranking_collision
+* semantic_misdirection
+
+Diagnostics are generated via:
+
+```http id="calibration-diagnostics"
+POST /v1/calibration/diagnostics
+```
+
+---
+
+## Calibration Profiles
+
+Profile-aware retrieval is now supported for adaptive ranking:
+
+* mmo_profile
+* unity_profile
+* networking_profile
+* lua_profile
+* shader_profile
+* xml_profile
+
+This is the base of a self-calibrating retrieval system where MMO and Unity queries can be tuned independently.
+
+---
+
 # Long-Term Goal
 
 BRASA is evolving toward:
@@ -417,28 +492,47 @@ But:
 
 Current Phase:
 
-* Cognitive Calibration Phase
+* Phase 3 - Cognitive Usage
 
 Focus:
 
-* retrieval quality
-* context engineering
-* evaluation systems
-* architectural cognition
-* semantic ranking
-* reflection infrastructure
+* daily real usage
+* real trace collection
+* retrieval debugging
+* context quality scoring
+* hallucination detection
+* feedback-driven calibration
 
 ---
 
 # Future Roadmap
 
+## Phase 3
+
+Cognitive Usage
+
+* daily usage on real project tasks
+* cognitive telemetry dataset growth
+* feedback loop adoption across teams
+* regression tracking from real traces
+
 ## Phase 4
 
 Reflection + Self-Healing Cognition
 
+* trace failure analysis
+* stale knowledge detection
+* confidence repair
+* auto-weight adjustment
+
 ## Phase 5
 
-Persistent Cognitive Sessions
+Persistent Studio Brain
+
+* long-term architectural evolution tracking
+* gameplay cognition continuity
+* autonomous documentation suggestions
+* architecture-aware planning assistance
 
 ## Phase 6
 

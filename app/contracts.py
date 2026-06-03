@@ -208,6 +208,51 @@ class EvaluationRunRequest(BaseModel):
     user_id: str | None = None
 
 
+class CognitiveFeedbackVerdict(str, Enum):
+    CORRECT = "correct"
+    PARTIAL = "partial"
+    INCORRECT = "incorrect"
+
+
+class CognitiveIssueTag(str, Enum):
+    CONTEXT_BAD = "context_bad"
+    XML_MISSING = "xml_missing"
+    HALLUCINATION = "hallucination"
+    RETRIEVAL_INCORRECT = "retrieval_incorrect"
+    COMPRESSION_BAD = "compression_bad"
+    ARCHITECTURAL_LOSS = "architectural_loss"
+
+
+class CognitiveFeedbackCreateRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    query: str = Field(min_length=2)
+    request_id: str | None = None
+    verdict: CognitiveFeedbackVerdict = CognitiveFeedbackVerdict.PARTIAL
+    issues: list[CognitiveIssueTag] = Field(default_factory=list)
+    notes: str = ""
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class CognitiveFeedbackEntry(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    query: str = Field(min_length=2)
+    request_id: str | None = None
+    verdict: CognitiveFeedbackVerdict = CognitiveFeedbackVerdict.PARTIAL
+    issues: list[CognitiveIssueTag] = Field(default_factory=list)
+    notes: str = ""
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class CognitiveFeedbackSearchResponse(BaseModel):
+    items: list[CognitiveFeedbackEntry]
+
+
 class EvaluationReport(BaseModel):
     report_id: str = Field(default_factory=lambda: str(uuid4()))
     generated_at: datetime = Field(default_factory=utc_now)

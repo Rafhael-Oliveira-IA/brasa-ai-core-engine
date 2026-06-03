@@ -15,6 +15,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     data_dir: Path = BASE_DIR / "data"
+    brasa_runtime_root: Path = BASE_DIR / ".brasa" / "runtime"
+    brasa_cognition_root: Path = BASE_DIR / ".brasa" / "cognition"
+    brasa_calibration_root: Path = BASE_DIR / ".brasa" / "calibration"
+    brasa_runtime_sessions_dir: Path = BASE_DIR / ".brasa" / "runtime" / "sessions"
+    brasa_runtime_traces_dir: Path = BASE_DIR / ".brasa" / "runtime" / "traces"
+    brasa_runtime_context_dir: Path = BASE_DIR / ".brasa" / "runtime" / "temporary_context"
+    calibration_failures_dir: Path = BASE_DIR / ".brasa" / "calibration" / "failures"
+    calibration_heuristics_dir: Path = BASE_DIR / ".brasa" / "calibration" / "heuristics"
+    calibration_weights_dir: Path = BASE_DIR / ".brasa" / "calibration" / "weights"
+    calibration_profiles_dir: Path = BASE_DIR / ".brasa" / "calibration" / "ranking_profiles"
     sqlite_path: Path = BASE_DIR / "data" / "memory.db"
     trace_file: Path = BASE_DIR / "data" / "traces.jsonl"
     reflection_dir: Path = BASE_DIR / "data" / "reflection_reports"
@@ -64,4 +74,14 @@ def get_settings() -> Settings:
     settings.alibaba_embedding_cache_file.parent.mkdir(parents=True, exist_ok=True)
     settings.trace_file.parent.mkdir(parents=True, exist_ok=True)
     settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.brasa_runtime_root.mkdir(parents=True, exist_ok=True)
+    settings.brasa_cognition_root.mkdir(parents=True, exist_ok=True)
+    settings.brasa_calibration_root.mkdir(parents=True, exist_ok=True)
+    settings.brasa_runtime_sessions_dir.mkdir(parents=True, exist_ok=True)
+    settings.brasa_runtime_traces_dir.mkdir(parents=True, exist_ok=True)
+    settings.brasa_runtime_context_dir.mkdir(parents=True, exist_ok=True)
+    settings.calibration_failures_dir.mkdir(parents=True, exist_ok=True)
+    settings.calibration_heuristics_dir.mkdir(parents=True, exist_ok=True)
+    settings.calibration_weights_dir.mkdir(parents=True, exist_ok=True)
+    settings.calibration_profiles_dir.mkdir(parents=True, exist_ok=True)
     return settings

@@ -7,9 +7,13 @@ from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 
+from app.calibration import CognitiveDiagnosticsEngine
 from app.context_builder import ContextBuilder
 from app.contracts import (
     ChatResponse,
+    CognitiveFeedbackCreateRequest,
+    CognitiveFeedbackEntry,
+    CognitiveFeedbackSearchResponse,
     ContextAssembleResponse,
     EvaluationReport,
     EvaluationRunRequest,
@@ -26,6 +30,7 @@ from app.contracts import (
     WatcherCheckRequest,
 )
 from app.evaluation import EvaluationEngine
+from app.feedback import CognitiveFeedbackRepository
 from app.ingestion import ProjectIngestionPipeline, ProjectIngestionReport, ProjectIngestionRequest
 from app.knowledge import (
     KnowledgeCompiler,
@@ -50,6 +55,7 @@ from app.workspace import normalize_workspace_id, scoped_project_id
 class RuntimeContainer:
     settings: Settings
     memory_repository: MemoryRepository
+    feedback_repository: CognitiveFeedbackRepository
     knowledge_compiler: KnowledgeCompiler
     ingestion_pipeline: ProjectIngestionPipeline
     watcher_engine: FileSystemWatcherEngine
@@ -60,10 +66,12 @@ class RuntimeContainer:
     reflection: ReflectionService
     evaluation_engine: EvaluationEngine
     telemetry: TraceLogger
+    diagnostics_engine: CognitiveDiagnosticsEngine
 
 
 def build_runtime(settings: Settings) -> RuntimeContainer:
     memory_repository = MemoryRepository(settings.sqlite_path)
+    feedback_repository = CognitiveFeedbackRepository(settings.sqlite_path)
 
     include_extensions = {
         item.strip()
@@ -136,10 +144,19 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         alibaba_provider=alibaba_provider,
     )
 
+    diagnostics_engine = CognitiveDiagnosticsEngine(
+        trace_file=settings.trace_file,
+        output_dir=settings.calibration_failures_dir,
+        usage_dataset_dir=settings.evaluation_dir / "cognitive_usage",
+        feedback_repository=feedback_repository,
+    )
+
     reflection = ReflectionService(
         repository=memory_repository,
         report_dir=settings.reflection_dir,
         knowledge_compiler=knowledge_compiler,
+        feedback_repository=feedback_repository,
+        diagnostics_engine=diagnostics_engine,
     )
     evaluation_engine = EvaluationEngine(
         trace_file=settings.trace_file,
@@ -163,6 +180,7 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
     return RuntimeContainer(
         settings=settings,
         memory_repository=memory_repository,
+        feedback_repository=feedback_repository,
         knowledge_compiler=knowledge_compiler,
         ingestion_pipeline=ingestion_pipeline,
         watcher_engine=watcher_engine,
@@ -173,6 +191,7 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         reflection=reflection,
         evaluation_engine=evaluation_engine,
         telemetry=telemetry,
+        diagnostics_engine=diagnostics_engine,
     )
 
 
@@ -285,6 +304,51 @@ def create_memory(payload: MemoryCreateRequest, request: Request) -> MemoryEntry
     )
 
     return runtime.memory_repository.add_entry(entry)
+
+
+@app.post("/v1/feedback", response_model=CognitiveFeedbackEntry)
+def create_feedback(payload: CognitiveFeedbackCreateRequest, request: Request) -> CognitiveFeedbackEntry:
+    runtime = runtime_from(request)
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+    scoped_project = scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id)
+
+    entry = CognitiveFeedbackEntry(
+        workspace_id=workspace_id,
+        project_id=scoped_project,
+        user_id=payload.user_id,
+        query=payload.query,
+        request_id=payload.request_id,
+        verdict=payload.verdict,
+        issues=payload.issues,
+        notes=payload.notes,
+        provenance={
+            **payload.provenance,
+            "workspace_id": workspace_id,
+            "project_id": payload.project_id,
+        },
+    )
+    stored = runtime.feedback_repository.add_entry(entry)
+    trace_id = runtime.telemetry.new_trace_id()
+    runtime.telemetry.log_feedback(trace_id=trace_id, entry=stored)
+    return stored
+
+
+@app.get("/v1/feedback/recent", response_model=CognitiveFeedbackSearchResponse)
+def recent_feedback(
+    request: Request,
+    workspace_id: str = Query(default="brasa_ai_workspace"),
+    project_id: str = Query(...),
+    user_id: str = Query(...),
+    limit: int = Query(default=40, ge=1, le=500),
+) -> CognitiveFeedbackSearchResponse:
+    runtime = runtime_from(request)
+    scoped_project = scoped_project_id(project_id=project_id, workspace_id=workspace_id)
+    items = runtime.feedback_repository.list_recent(
+        project_id=scoped_project,
+        user_id=user_id,
+        limit=limit,
+    )
+    return CognitiveFeedbackSearchResponse(items=items)
 
 
 @app.get("/v1/memory/search", response_model=MemorySearchResponse)
@@ -426,6 +490,22 @@ def recent_evaluations(request: Request, limit: int = Query(default=20, ge=1, le
     runtime = runtime_from(request)
     items = runtime.evaluation_engine.read_recent(limit=limit)
     return {"items": items}
+
+
+@app.post("/v1/calibration/diagnostics")
+def run_calibration_diagnostics(
+    request: Request,
+    workspace_id: str = Query(default="brasa_ai_workspace"),
+    project_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    runtime = runtime_from(request)
+    scoped_project = (
+        scoped_project_id(project_id=project_id, workspace_id=workspace_id)
+        if project_id is not None
+        else None
+    )
+    return runtime.diagnostics_engine.run(project_id=scoped_project, user_id=user_id)
 
 
 @app.post("/v1/knowledge/sync", response_model=KnowledgeSyncReport)

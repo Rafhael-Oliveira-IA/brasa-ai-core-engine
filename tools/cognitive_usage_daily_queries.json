@@ -1,0 +1,328 @@
+{
+  "queries": [
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "networking",
+      "prompt": "where protocolgame opcode routing starts and how packet handlers are chained"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "networking",
+      "prompt": "which files decode extended opcodes and dispatch to lua callbacks"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "networking",
+      "prompt": "how connection lifecycle and login packet validation work"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "startup",
+      "prompt": "how revscriptsys startup pipeline loads lua script systems"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "startup",
+      "prompt": "how actions.xml integrates with Action() runtime registration"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "xml-lua",
+      "prompt": "actions.xml itemid actionid uniqueid versus Action() register"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "xml-lua",
+      "prompt": "movements.xml fromid toid script versus MoveEvent() register em data/scripts"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "xml-lua",
+      "prompt": "talkactions.xml classico versus data/scripts runtime com register"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "xml-lua",
+      "prompt": "creaturescripts.xml callbacks versus CreatureEvent() register"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "xml-lua",
+      "prompt": "spells.xml pipeline versus Spell() runtime scripts"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "xml-lua",
+      "prompt": "globalevents.xml schedule flow versus GlobalEvent() runtime"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "gameplay",
+      "prompt": "how inventory sync works between server state and client update"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "gameplay",
+      "prompt": "where market listing and purchase validation are implemented"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "gameplay",
+      "prompt": "which systems handle quest progress persistence and reward delivery"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "gameplay",
+      "prompt": "how raid events are scheduled and triggered"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "ai",
+      "prompt": "how npc ai state transitions are modeled"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "ai",
+      "prompt": "where monster target selection and threat logic run"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "ai",
+      "prompt": "how summon behaviors differ from wild creature behaviors"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "database",
+      "prompt": "which modules write player progression to database"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "database",
+      "prompt": "where migration scripts are referenced at startup"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "database",
+      "prompt": "how account and character loading flow is orchestrated"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "security",
+      "prompt": "where anti-cheat checks are executed during packet handling"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "security",
+      "prompt": "how command permissions and admin talkactions are validated"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "performance",
+      "prompt": "which systems have heavy startup loading and candidate caching points"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "performance",
+      "prompt": "where hot loops exist in creature think and movement updates"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-architecture",
+      "prompt": "how gameplay bootstrap sequence initializes core managers"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-architecture",
+      "prompt": "which scripts connect scene load with save system restore"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-prefab",
+      "prompt": "how prefab X dependencies connect to inventory and equipment"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-prefab",
+      "prompt": "which prefabs are responsible for npc interaction prompts"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-shaders",
+      "prompt": "shadergraph pipeline for terrain and vegetation rendering"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-shaders",
+      "prompt": "where ShaderGraph outputs are bound to runtime materials"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-save",
+      "prompt": "how save slots serialize inventory, quest, and world state"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-save",
+      "prompt": "what components mark data as persistent across scene transitions"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-ai",
+      "prompt": "ai state machine architecture for enemy behavior"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-ai",
+      "prompt": "how npc behavior trees integrate with animation and navmesh"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-networking",
+      "prompt": "where multiplayer sync messages are encoded and applied"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-networking",
+      "prompt": "how prediction and reconciliation are implemented"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-input",
+      "prompt": "inputactions pipeline from actions map to gameplay commands"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-input",
+      "prompt": "which systems consume UI versus gameplay input contexts"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-inventory",
+      "prompt": "where item pickup flow updates ui and persistence"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-inventory",
+      "prompt": "equipment pipeline from prefab equip slot to stats recomputation"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-audio",
+      "prompt": "audio event routing for ambience, combat, and ui"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-vfx",
+      "prompt": "where vfx triggers are attached to ability cast pipeline"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-config",
+      "prompt": "which ScriptableObject configs drive balancing and progression"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-config",
+      "prompt": "how configuration hot-reload or editor-time validation works"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-ui",
+      "prompt": "ui architecture for menu navigation and modal stacking"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-ui",
+      "prompt": "where hud updates subscribe to gameplay state changes"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-runtime",
+      "prompt": "scene bootstrap order and dependency injection flow"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "unity-runtime",
+      "prompt": "where runtime service locator or singleton initialization happens"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "cross-check",
+      "prompt": "compare inventory sync architecture between MMO server and Unity client"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "cross-check",
+      "prompt": "compare event registration style: xml/lua bindings versus unity runtime wiring"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "cross-check",
+      "prompt": "compare persistence boundaries: server authoritative db writes versus client save snapshots"
+    },
+    {
+      "workspace_id": "mmo_workspace",
+      "project_id": "SERVIDOR - ORIGINAL",
+      "domain": "calibration",
+      "prompt": "which contexts are often over-selected for opcode architecture questions"
+    },
+    {
+      "workspace_id": "unity_workspace",
+      "project_id": "BRP_GreenFall_v4",
+      "domain": "calibration",
+      "prompt": "which contexts are often over-selected for shadergraph pipeline questions"
+    }
+  ]
+}
