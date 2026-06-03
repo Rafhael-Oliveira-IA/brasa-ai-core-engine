@@ -2,6 +2,7 @@
 
 ## Hierarchical Cognitive Operating System for Game Development
 
+Cognitive Runtime Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
 
 BRASA Cognitive Runtime is a hybrid cognitive architecture designed for large-scale game development workflows, persistent architectural memory, and AI-assisted software reasoning.
