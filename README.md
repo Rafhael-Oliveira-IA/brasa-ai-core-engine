@@ -1,256 +1,464 @@
-# Brasa AI Core Lite
+# BRASA Cognitive Runtime
 
-Implementacao local-first para rodar rapido, com evolucao incremental e auditavel.
+## Hierarchical Cognitive Operating System for Game Development
 
-## Objetivo
+BRASA Cognitive Runtime is a hybrid cognitive architecture designed for large-scale game development workflows, persistent architectural memory, and AI-assisted software reasoning.
 
-- Entregar uma base funcional sem bancos complexos.
-- Manter arquitetura pronta para evoluir por camadas.
-- Introduzir conhecimento hierarquico para evitar context drift.
+The system combines:
 
-## Stack atual
+* local cognition (Ollama)
+* Alibaba Cloud reasoning (Qwen / ModelStudio)
+* hierarchical knowledge compilation
+* semantic retrieval
+* incremental context rebuilding
+* cognitive evaluation
+* architectural reflection
 
-- FastAPI para orquestracao.
-- SQLite para memoria persistente local.
-- Telemetria em JSONL.
-- Provider local sempre disponivel.
-- Adapter Alibaba OpenAI-compatible opcional.
-- Compilador cognitivo hierarquico incremental.
+Unlike traditional copilots, BRASA is not designed to be a simple prompt assistant.
 
-## Workspace Isolation
+Its goal is to become:
 
-Workspaces suportados por padrao:
+> A persistent architectural brain for long-lived game projects.
 
-- `mmo_workspace`
-- `unity_workspace`
-- `brasa_ai_workspace`
+---
 
-Isolamento aplicado em:
+# Vision
 
-- ingestion artifacts
-- retrieval context
-- watcher snapshots
-- memory scoping (via `workspace_id::project_id`)
+Modern game projects suffer from:
 
-Layout de artefatos isolados:
+* fragmented architectural knowledge
+* outdated documentation
+* context loss
+* onboarding difficulty
+* disconnected systems
+* increasing cognitive complexity
 
-- `.brasa/workspaces/<workspace>/<project>/raw`
-- `.brasa/workspaces/<workspace>/<project>/summaries`
-- `.brasa/workspaces/<workspace>/<project>/memories`
-- `.brasa/workspaces/<workspace>/<project>/graphs`
-- `.brasa/workspaces/<workspace>/<project>/contexts`
-- `.brasa/workspaces/<workspace>/<project>/metadata`
+BRASA solves this by transforming source code into:
 
-## Context Compression Hierarquico
+* structured knowledge
+* hierarchical memory
+* semantic context graphs
+* persistent architectural cognition
 
-Fluxo de compilacao:
+The runtime continuously compiles project knowledge into navigable cognitive layers.
 
-- file knowledge
-- folder knowledge
-- module knowledge
-- project knowledge
-- global project memory
+---
 
-Cada node possui:
+# Core Philosophy
 
-- resumo humano em Markdown
-- metadata estruturada em JSON
-- `source_hash`, `generation`, `confidence`, `stale`, `file_versions`
+The system does NOT treat code as plain text.
 
-Quando um arquivo muda, apenas o subgrafo necessario e regenerado.
+It treats projects as:
 
-## Setup rapido
+* evolving knowledge systems
+* dependency graphs
+* architectural ecosystems
+* persistent cognitive domains
 
-1. Crie e ative um ambiente virtual.
-2. Instale dependencias:
+BRASA focuses on:
 
-```bash
-pip install -r requirements.txt
+* context quality over raw prompting
+* architectural understanding over autocomplete
+* retrieval precision over token brute force
+* persistent memory over isolated sessions
+
+---
+
+# Architecture Overview
+
+```txt id="teovh8"
+FILES
+ ↓
+FILE KNOWLEDGE
+ ↓
+FOLDER KNOWLEDGE
+ ↓
+MODULE KNOWLEDGE
+ ↓
+PROJECT KNOWLEDGE
+ ↓
+GLOBAL MEMORY
+ ↓
+REFLECTION
+ ↓
+KNOWLEDGE REPAIR
 ```
 
-3. Copie `.env.example` para `.env`.
-4. Se quiser Alibaba, preencha `ALIBABA_API_KEY`.
-5. Execute:
+---
 
-```bash
-uvicorn app.main:app --reload
+# Runtime Layers
+
+## 1. Ingestion Engine
+
+Scans projects incrementally and builds hierarchical knowledge artifacts.
+
+Features:
+
+* file scanning
+* hashing
+* incremental rebuild
+* stale detection
+* dependency invalidation
+* structured metadata generation
+
+Supported ecosystems:
+
+* C++
+* Lua
+* Unity
+* XML
+* C#
+* ShaderGraph
+* OTServ/TFS architectures
+
+---
+
+## 2. Knowledge Compiler
+
+Transforms raw source code into:
+
+* summaries
+* structured metadata
+* dependency maps
+* architectural memory
+
+Generated artifacts:
+
+* file README
+* folder README
+* module README
+* project README
+* structured JSON knowledge
+
+---
+
+## 3. Hybrid Retrieval Engine
+
+The retrieval layer combines:
+
+* lexical retrieval
+* semantic retrieval
+* graph traversal
+* domain heuristics
+* contextual ranking
+
+Powered by:
+
+* Alibaba Embeddings
+* hybrid semantic scoring
+* MMO-aware retrieval heuristics
+
+The runtime understands:
+
+* OTServ architectures
+* Revscriptsys
+* XML startup pipelines
+* Lua registration flows
+* Unity gameplay structures
+
+---
+
+## 4. Cognitive Query Engine
+
+Central runtime orchestration layer responsible for:
+
+* retrieval
+* context assembly
+* routing
+* reasoning
+* memory
+* telemetry
+
+The engine dynamically decides:
+
+* local vs cloud reasoning
+* context expansion depth
+* token budget
+* retrieval strategies
+* fallback policies
+
+---
+
+## 5. Evaluation Engine
+
+Operational cognition evaluation system.
+
+Measures:
+
+* retrieval quality
+* context quality
+* semantic ranking
+* reasoning consistency
+* hallucination risk
+* runtime effectiveness
+
+This enables:
+
+* benchmark-driven evolution
+* regression detection
+* retrieval tuning
+* cognitive observability
+
+---
+
+## 6. Reflection System (WIP)
+
+Future self-healing cognition layer.
+
+Goals:
+
+* stale context detection
+* architecture drift analysis
+* dead system detection
+* summary repair
+* dependency repair
+* confidence re-scoring
+
+---
+
+# Hybrid AI Architecture
+
+BRASA uses a hybrid reasoning model.
+
+## Local Runtime (Ollama)
+
+Used for:
+
+* lightweight reasoning
+* preprocessing
+* embeddings
+* caching
+* fallback execution
+* low-cost cognition
+
+---
+
+## Alibaba Cloud (Qwen / ModelStudio)
+
+Used for:
+
+* advanced reasoning
+* large context analysis
+* architectural planning
+* semantic retrieval
+* reflection
+* high-complexity cognition
+
+Models currently targeted:
+
+* Qwen3.5-Plus
+* Qwen3.7-Plus
+* Qwen-Max
+* text-embedding-v4
+
+---
+
+# Cognitive Retrieval Flow
+
+```txt id="9htr3m"
+Query
+ ↓
+Intent Classification
+ ↓
+Hybrid Retrieval
+ ↓
+Graph Expansion
+ ↓
+Context Ranking
+ ↓
+Context Budgeting
+ ↓
+Reasoning Routing
+ ↓
+LLM Execution
+ ↓
+Evaluation
+ ↓
+Memory Update
 ```
 
-## Endpoints principais
+---
 
-- `GET /health`
-- `POST /v1/chat`
-- `POST /v1/tasks/execute`
-- `POST /v1/memory`
-- `GET /v1/memory/search`
-- `POST /v1/reflection/run`
-- `POST /v1/knowledge/sync`
-- `GET /v1/knowledge/tree`
-- `GET /v1/knowledge/search?query=...`
-- `POST /v1/ingestion/run`
-- `POST /v1/context/assemble`
-- `POST /v1/watcher/check`
-- `POST /v1/evaluation/run`
-- `GET /v1/evaluation/recent`
+# Current Features
 
-Observacao: endpoints cognitivos aceitam `workspace_id` no payload (default `brasa_ai_workspace`).
+## Operational
 
-## Artefatos gerados
+* Hierarchical knowledge generation
+* Incremental ingestion
+* Dependency invalidation
+* Hybrid semantic retrieval
+* Alibaba embedding integration
+* Context assembly
+* Routing engine
+* Evaluation engine
+* Cognitive telemetry
+* Runtime tracing
+* MMO-aware ranking
+* Unity-aware ranking
+* FastAPI runtime
+* Local-first architecture
 
-- `data/knowledge/files/...` (README + metadata por arquivo)
-- `data/knowledge/folders/...`
-- `data/knowledge/modules/...`
-- `data/knowledge/project/PROJECT_KNOWLEDGE.md`
-- `data/knowledge/global/GLOBAL_MEMORY.md`
-- `data/knowledge/state.json`
+---
 
-## Project Ingestion MVP
+## Domain-Aware Cognition
 
-Entrada:
+The runtime already understands:
 
-- caminho do projeto, ex: `D:/Projects/MMO`
+* MMO startup pipelines
+* Revscriptsys architecture
+* XML event registration
+* Lua event systems
+* OTServ/TFS project structures
+* Unity gameplay architecture
+* gameplay systems
+* inventory systems
+* networking systems
 
-Saida:
+---
 
-- `.brasa/projects/MMO/`
-	- `raw/`
-	- `summaries/`
-	- `memories/`
-	- `graphs/`
-	- `contexts/`
-	- `metadata/`
+# Project Structure
 
-Exemplo de execucao via API:
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/ingestion/run \
-	-H "Content-Type: application/json" \
-	-d '{"workspace_id":"mmo_workspace","project_path":"D:/Projects/MMO","force":false}'
+```txt id="c0tnly"
+.brasa/
+ ├── projects/
+ │    ├── <project>/
+ │    │    ├── raw/
+ │    │    ├── summaries/
+ │    │    ├── memories/
+ │    │    ├── graphs/
+ │    │    ├── contexts/
+ │    │    └── metadata/
+ │
+ ├── evaluations/
+ ├── traces/
+ └── cache/
 ```
 
-## Context Retrieval Engine
+---
 
-`POST /v1/context/assemble` monta pacote contextual com:
+# API Endpoints
 
-- intent da consulta
-- sistemas relevantes
-- expansao de dependencias
-- riscos e compressao por budget
+## Ingestion
 
-Retrieval hibrido atual:
-
-- lexical relevance
-- Alibaba embeddings (`text-embedding-v4`)
-- graph expansion
-- freshness/confidence/importance weighting
-
-Quando `ALIBABA_API_KEY` esta configurada, o runtime usa embeddings Alibaba com cache local para melhorar ranking semantico.
-
-## Cognitive Task Runtime (Phase 3 bootstrap)
-
-`POST /v1/tasks/execute` executa tarefas cognitivas tipadas com pipeline observavel.
-
-Tipos iniciais:
-
-- `chat`
-- `summarize`
-- `reasoning`
-- `reflection`
-- `repair`
-- `planning`
-- `architecture`
-- `debugging`
-- `generation`
-
-Pipeline atual (runtime local):
-
-- intent analysis
-- context retrieval
-- graph expansion
-- reasoning (router + provider)
-- memory update
-- optional reflection
-
-`POST /v1/chat` continua disponivel para compatibilidade e agora funciona como wrapper para `task_type=chat` quando o task runtime esta habilitado.
-
-## Watcher Incremental
-
-`POST /v1/watcher/check` detecta mudancas de filesystem e pode acionar rebuild incremental automaticamente.
-
-## Provider + Reasoning Layer (Phase 2.5)
-
-Pipeline cognitivo atualizado:
-
-```text
-FILES -> LOCAL INGESTION -> LOCAL KNOWLEDGE -> LOCAL RETRIEVAL -> CONTEXT ASSEMBLY -> ALIBABA/QWEN -> REASONING
+```http id="5w7by8"
+POST /v1/ingestion/run
 ```
 
-Implementado no runtime:
+Runs project ingestion and hierarchical compilation.
 
-- Cognitive Query Engine: retrieval + assembly + model routing + response
-- Alibaba Provider Runtime: retries, region fallback, streaming interface, token accounting, cost estimation
-- Cost-aware routing policy: escolhe tier com base em intent/contexto e budget
+---
 
-Configuracoes novas no `.env` (opcionais):
+## Context Assembly
 
-```bash
-ALIBABA_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-ALIBABA_REGION_BASE_URLS=
-ALIBABA_MAX_RETRIES=2
-ALIBABA_RETRY_BACKOFF_SECONDS=0.35
-ALIBABA_EMBEDDING_ENABLED=true
-ALIBABA_EMBEDDING_MODEL=text-embedding-v4
-ALIBABA_EMBEDDING_TIMEOUT_SECONDS=25
-ALIBABA_EMBEDDING_MAX_BATCH_SIZE=16
+```http id="ux6b7d"
+POST /v1/context/assemble
 ```
 
-Observacao: `ALIBABA_REGION_BASE_URLS` aceita uma lista separada por virgula para fallback de regiao.
+Builds runtime cognitive context.
 
-## Evaluation Engine
+---
 
-`POST /v1/evaluation/run` calcula metricas operacionais a partir de traces do runtime:
+## Chat / Reasoning
 
-- retrieval precision
-- hallucination rate (proxy)
-- stale context rate
-- architectural consistency
-- token efficiency
-- reasoning success
-
-`GET /v1/evaluation/recent` retorna os relatarios de avaliacao mais recentes.
-
-## Golden Cognitive Tests
-
-Benchmark cognitivo inicial implementado em:
-
-- `tests/golden/golden_cognitive_cases.json` (20 queries)
-- `tests/test_golden_cognitive_benchmark.py`
-
-Cada caso define:
-
-- expected systems
-- expected files
-- expected dependencies
-- expected concepts
-
-Metricas validadas no benchmark:
-
-- file precision
-- file recall
-- dependency recall
-- system hit rate
-- concept hit rate
-
-Execucao:
-
-```bash
-python -m pytest -q tests/test_golden_cognitive_benchmark.py
+```http id="esjlwm"
+POST /v1/chat
 ```
 
-Esse benchmark marca o inicio da fase cientifica: calibrar retrieval/context/reasoning/evaluation antes de adicionar novas features.
+Executes cognitive reasoning pipeline.
 
-## Evolucao recomendada
+---
 
-1. Substituir retrieval lexical por vetor local.
-2. Adicionar parser AST por linguagem para aumentar confidence.
-3. Integrar policy de aprovacao humana para rotas Ultra.
+## Evaluation
+
+```http id="vbqvgs"
+POST /v1/evaluation/run
+GET /v1/evaluation/recent
+```
+
+Runs cognition evaluation and retrieves reports.
+
+---
+
+# Long-Term Goal
+
+BRASA is evolving toward:
+
+> A fully persistent cognitive operating system for game studios.
+
+Not a copilot.
+
+Not a chatbot.
+
+But:
+
+* a living architectural memory
+* a software cognition engine
+* a self-improving reasoning runtime
+* a persistent AI layer for long-lived game ecosystems
+
+---
+
+# Status
+
+Current Phase:
+
+* Cognitive Calibration Phase
+
+Focus:
+
+* retrieval quality
+* context engineering
+* evaluation systems
+* architectural cognition
+* semantic ranking
+* reflection infrastructure
+
+---
+
+# Future Roadmap
+
+## Phase 4
+
+Reflection + Self-Healing Cognition
+
+## Phase 5
+
+Persistent Cognitive Sessions
+
+## Phase 6
+
+Specialized MMO/Unity Agents
+
+## Phase 7
+
+Autonomous Architectural Reasoning
+
+---
+
+# Built For
+
+* MMO servers
+* Unity projects
+* persistent online games
+* large gameplay systems
+* long-lived codebases
+* community-driven ecosystems
+* AI-assisted game studios
+
+---
+
+# Philosophy
+
+The future of software development is not:
+
+* larger prompts
+* more tokens
+* isolated chat sessions
+
+The future is:
+
+* persistent cognition
+* architectural memory
+* hierarchical knowledge
+* semantic reasoning
+* self-evolving context systems
