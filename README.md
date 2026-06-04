@@ -11,6 +11,7 @@ Reflection & Cognitive Calibration & Agent System + Better UI Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
 
 Cognitive Distributed Runtime
+https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/4
 
 <img width="519" height="894" alt="image" src="https://github.com/user-attachments/assets/70b6f4af-32e3-4ad6-9ddf-e1c09467cc55" />
 <img width="697" height="699" alt="image" src="https://github.com/user-attachments/assets/db4fffb2-134d-4b20-90b7-38e860b80de5" />
