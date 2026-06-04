@@ -8,6 +8,9 @@ https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
 Reflection & Cognitive Calibration Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
 
+<img width="1887" height="943" alt="image" src="https://github.com/user-attachments/assets/21a8aba3-7608-4541-aa7b-fcc5df198a05" />
+<img width="1886" height="953" alt="image" src="https://github.com/user-attachments/assets/ce03e3dc-82f0-4305-b7c7-678ca0b8b080" />
+
 BRASA Cognitive Runtime is a hybrid cognitive architecture designed for large-scale game development workflows, persistent architectural memory, and AI-assisted software reasoning.
 
 The system combines:
