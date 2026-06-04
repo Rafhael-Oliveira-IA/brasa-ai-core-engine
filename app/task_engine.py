@@ -107,6 +107,7 @@ class CognitiveTaskEngine:
         routing_started = perf_counter()
         routing_metadata = dict(envelope.metadata)
         routing_metadata["retrieval"] = assembled
+        routing_metadata["require_alibaba_final_response"] = task.task_type == TaskType.CHAT
         routing_envelope = envelope.model_copy(update={"metadata": routing_metadata})
 
         response, decision = await self.router.generate(

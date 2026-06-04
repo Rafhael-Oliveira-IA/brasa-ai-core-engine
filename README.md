@@ -5,6 +5,15 @@
 Cognitive Runtime Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
 
+Reflection & Cognitive Calibration & Agent System + Better UI Update
+https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
+
+<img width="519" height="894" alt="image" src="https://github.com/user-attachments/assets/70b6f4af-32e3-4ad6-9ddf-e1c09467cc55" />
+<img width="697" height="699" alt="image" src="https://github.com/user-attachments/assets/db4fffb2-134d-4b20-90b7-38e860b80de5" />
+<img width="1201" height="753" alt="image" src="https://github.com/user-attachments/assets/c03ee921-127b-4df4-9b1f-cde7a23cbfe6" />
+<img width="887" height="716" alt="image" src="https://github.com/user-attachments/assets/a252f537-bdc7-483b-b655-3bc0354d40c8" />
+
+
 BRASA Cognitive Runtime is a hybrid cognitive architecture designed for large-scale game development workflows, persistent architectural memory, and AI-assisted software reasoning.
 
 The system combines:
@@ -308,6 +317,8 @@ Memory Update
 * Evaluation engine
 * Cognitive telemetry
 * Runtime tracing
+* Cognitive feedback loop API
+* Daily cognitive usage runner
 * MMO-aware ranking
 * Unity-aware ranking
 * FastAPI runtime
@@ -351,6 +362,35 @@ The runtime already understands:
 
 ---
 
+# Cognition Plane Separation
+
+```txt id="calibration-planes"
+.brasa/
+ ├── runtime/
+ │    ├── sessions/
+ │    ├── traces/
+ │    └── temporary_context/
+ │
+ ├── cognition/
+ │    ├── projects/
+ │    ├── reflections/
+ │    ├── evaluations/
+ │    ├── graph_memory/
+ │    └── generations/
+ │
+ └── calibration/
+	├── failures/
+	├── heuristics/
+	├── weights/
+	└── ranking_profiles/
+```
+
+Runtime cognition keeps fast-changing state (sessions/traces/context packets).
+
+Knowledge cognition keeps durable architectural memory and reflective intelligence.
+
+---
+
 # API Endpoints
 
 ## Ingestion
@@ -381,6 +421,29 @@ POST /v1/chat
 
 Executes cognitive reasoning pipeline.
 
+Grounded chat policy:
+
+* final answer is forced through Alibaba for chat responses
+* local context and local draft are still used to improve precision
+* model is instructed to separate confirmed evidence vs hypotheses/gaps
+* model is instructed to avoid inventing formulas/numeric constants when evidence is missing
+
+Auto-reingest on weak chat context:
+
+* when chat context is weak or stale-like, runtime can trigger `knowledge_compiler.sync()` automatically
+* retrieval response includes `auto_reingest` diagnostics (trigger reason + sync status)
+* this keeps chat and auto-agent workflows aligned with latest project cognition artifacts
+
+Key runtime knobs (Settings / .env):
+
+* `chat_local_assist_enabled`
+* `chat_local_assist_max_chars`
+* `chat_auto_reingest_on_weak_context`
+* `chat_auto_reingest_min_selected_context`
+* `chat_auto_reingest_cooldown_seconds`
+* `chat_force_alibaba_response`
+* `chat_force_alibaba_ignore_budget`
+
 ---
 
 ## Evaluation
@@ -391,6 +454,79 @@ GET /v1/evaluation/recent
 ```
 
 Runs cognition evaluation and retrieves reports.
+
+---
+
+## Cognitive Feedback Loop
+
+```http id="feedback-loop"
+POST /v1/feedback
+GET /v1/feedback/recent
+```
+
+Collects user verdicts from real usage, including:
+
+* correct / partial / incorrect
+* context_bad
+* xml_missing
+* hallucination
+* retrieval_incorrect
+* compression_bad
+* architectural_loss
+
+These signals feed evaluation and reflection cycles.
+
+---
+
+## Daily Cognitive Usage Dataset
+
+Run daily real-usage query batches and store a proprietary calibration dataset:
+
+* query set: [tools/cognitive_usage_daily_queries.json](tools/cognitive_usage_daily_queries.json)
+* runner: [tools/run_cognitive_usage_phase.py](tools/run_cognitive_usage_phase.py)
+* output: data/evaluations/cognitive_usage/*.jsonl
+
+Example:
+
+python tools/run_cognitive_usage_phase.py
+
+---
+
+## Retrieval Failure Taxonomy
+
+The calibration layer classifies retrieval failures into explicit buckets:
+
+* xml_missing
+* wrong_module
+* wrong_generation
+* stale_summary
+* dependency_noise
+* graph_underexpansion
+* graph_overexpansion
+* compression_loss
+* ranking_collision
+* semantic_misdirection
+
+Diagnostics are generated via:
+
+```http id="calibration-diagnostics"
+POST /v1/calibration/diagnostics
+```
+
+---
+
+## Calibration Profiles
+
+Profile-aware retrieval is now supported for adaptive ranking:
+
+* mmo_profile
+* unity_profile
+* networking_profile
+* lua_profile
+* shader_profile
+* xml_profile
+
+This is the base of a self-calibrating retrieval system where MMO and Unity queries can be tuned independently.
 
 ---
 
@@ -417,28 +553,47 @@ But:
 
 Current Phase:
 
-* Cognitive Calibration Phase
+* Phase 3 - Cognitive Usage
 
 Focus:
 
-* retrieval quality
-* context engineering
-* evaluation systems
-* architectural cognition
-* semantic ranking
-* reflection infrastructure
+* daily real usage
+* real trace collection
+* retrieval debugging
+* context quality scoring
+* hallucination detection
+* feedback-driven calibration
 
 ---
 
 # Future Roadmap
 
+## Phase 3
+
+Cognitive Usage
+
+* daily usage on real project tasks
+* cognitive telemetry dataset growth
+* feedback loop adoption across teams
+* regression tracking from real traces
+
 ## Phase 4
 
 Reflection + Self-Healing Cognition
 
+* trace failure analysis
+* stale knowledge detection
+* confidence repair
+* auto-weight adjustment
+
 ## Phase 5
 
-Persistent Cognitive Sessions
+Persistent Studio Brain
+
+* long-term architectural evolution tracking
+* gameplay cognition continuity
+* autonomous documentation suggestions
+* architecture-aware planning assistance
 
 ## Phase 6
 

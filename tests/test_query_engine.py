@@ -36,7 +36,11 @@ class StubContextBuilder:
 
 
 class StubRouter:
+    def __init__(self) -> None:
+        self.last_envelope = None
+
     async def generate(self, *, envelope: RequestEnvelope, context: ContextPacket):
+        self.last_envelope = envelope
         response = ProviderResponse(
             answer="Refactor inventory in three safe phases.",
             confidence=0.84,
@@ -77,9 +81,10 @@ def test_query_engine_runs_full_cognitive_flow() -> None:
         repository = MemoryRepository(Path(temp_dir) / "memory.db")
         telemetry = StubTelemetry()
 
+        router = StubRouter()
         engine = CognitiveQueryEngine(
             context_builder=StubContextBuilder(),
-            router=StubRouter(),
+            router=router,
             telemetry=telemetry,
             memory_repository=repository,
         )
@@ -100,3 +105,6 @@ def test_query_engine_runs_full_cognitive_flow() -> None:
         assert any("Request:" in item.content for item in stored)
         assert telemetry.retrieval_logged == 1
         assert telemetry.route_logged == 1
+        assert router.last_envelope is not None
+        assert router.last_envelope.metadata.get("task_type") == "chat"
+        assert router.last_envelope.metadata.get("require_alibaba_final_response") is True

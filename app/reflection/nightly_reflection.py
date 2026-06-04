@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.contracts import MemoryEntry, MemoryScope, ReflectionReport, ReflectionTask
+from app.calibration.diagnostics import CognitiveDiagnosticsEngine
+from app.feedback.repository import CognitiveFeedbackRepository
 from app.memory.repository import MemoryRepository
 
 if TYPE_CHECKING:
@@ -19,10 +21,14 @@ class ReflectionService:
         repository: MemoryRepository,
         report_dir: Path,
         knowledge_compiler: KnowledgeCompiler | None = None,
+        feedback_repository: CognitiveFeedbackRepository | None = None,
+        diagnostics_engine: CognitiveDiagnosticsEngine | None = None,
     ) -> None:
         self.repository = repository
         self.report_dir = report_dir
         self.knowledge_compiler = knowledge_compiler
+        self.feedback_repository = feedback_repository
+        self.diagnostics_engine = diagnostics_engine
         self.report_dir.mkdir(parents=True, exist_ok=True)
 
     def run_once(
@@ -58,6 +64,43 @@ class ReflectionService:
                 notes.append(
                     f"Detected {drift_count} potential stale knowledge nodes; run /v1/knowledge/sync."
                 )
+
+        if self.feedback_repository is not None:
+            feedback_summary = self.feedback_repository.summarize(
+                project_id=project_id,
+                user_id=user_id,
+                limit=400,
+            )
+            feedback_total = int(feedback_summary.get("total", 0))
+            if feedback_total > 0:
+                notes.append(f"Analyzed {feedback_total} cognitive feedback entries.")
+                top_issues = feedback_summary.get("top_issues", [])
+                if isinstance(top_issues, list) and top_issues:
+                    formatted = ", ".join(
+                        f"{name}:{count}"
+                        for name, count in top_issues[:4]
+                        if isinstance(name, str)
+                    )
+                    if formatted:
+                        notes.append(f"Top feedback issues: {formatted}.")
+
+        if self.diagnostics_engine is not None:
+            diagnostics = self.diagnostics_engine.run(project_id=project_id, user_id=user_id)
+            failure_counts = diagnostics.get("failure_counts", {})
+            if isinstance(failure_counts, dict) and failure_counts:
+                top_failures = sorted(
+                    ((str(name), int(value)) for name, value in failure_counts.items()),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:4]
+                formatted_failures = ", ".join(f"{name}:{count}" for name, count in top_failures if count > 0)
+                if formatted_failures:
+                    notes.append(f"Calibration failures: {formatted_failures}.")
+
+            recommendations = diagnostics.get("recommendations", [])
+            if isinstance(recommendations, list):
+                for recommendation in recommendations[:3]:
+                    notes.append(f"Calibration recommendation: {recommendation}")
 
         if not notes:
             notes.append("No anomalies detected in this cycle.")

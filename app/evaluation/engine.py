@@ -31,6 +31,7 @@ class EvaluationEngine:
 
         retrieval_events = [item for item in filtered if item.get("event_type") == "retrieval.assembly"]
         route_events = [item for item in filtered if item.get("event_type") == "route.decision"]
+        feedback_events = [item for item in filtered if item.get("event_type") == "cognitive.feedback"]
 
         retrieval_precision = self._retrieval_precision(retrieval_events)
         stale_context_rate = self._stale_context_rate(retrieval_events)
@@ -38,6 +39,14 @@ class EvaluationEngine:
         architecture_consistency = self._architecture_consistency(retrieval_events)
         token_efficiency = self._token_efficiency(route_events)
         reasoning_success = self._reasoning_success(route_events)
+        feedback_correct_rate = self._feedback_verdict_rate(feedback_events, verdict="correct")
+        feedback_partial_rate = self._feedback_verdict_rate(feedback_events, verdict="partial")
+        feedback_incorrect_rate = self._feedback_verdict_rate(feedback_events, verdict="incorrect")
+        feedback_hallucination_rate = self._feedback_issue_rate(feedback_events, issue="hallucination")
+        feedback_xml_missing_rate = self._feedback_issue_rate(feedback_events, issue="xml_missing")
+        feedback_retrieval_incorrect_rate = self._feedback_issue_rate(feedback_events, issue="retrieval_incorrect")
+        feedback_compression_bad_rate = self._feedback_issue_rate(feedback_events, issue="compression_bad")
+        feedback_architectural_loss_rate = self._feedback_issue_rate(feedback_events, issue="architectural_loss")
 
         totals = self._route_totals(route_events)
 
@@ -50,6 +59,12 @@ class EvaluationEngine:
             notes.append("Potential hallucination pressure detected in high-confidence responses.")
         if token_efficiency <= 0.40:
             notes.append("Low token efficiency; context compression and ranking should be tuned.")
+        if feedback_incorrect_rate >= 0.25:
+            notes.append("User feedback indicates high incorrect-response rate.")
+        if feedback_xml_missing_rate >= 0.20:
+            notes.append("Frequent XML-missing reports detected; XML ranking should be boosted.")
+        if feedback_hallucination_rate >= 0.15:
+            notes.append("Frequent hallucination reports detected from daily usage feedback.")
 
         if not notes:
             notes.append("Evaluation completed without critical degradation signals.")
@@ -67,6 +82,14 @@ class EvaluationEngine:
                 "architectural_consistency": architecture_consistency,
                 "token_efficiency": token_efficiency,
                 "reasoning_success": reasoning_success,
+                "feedback_correct_rate": feedback_correct_rate,
+                "feedback_partial_rate": feedback_partial_rate,
+                "feedback_incorrect_rate": feedback_incorrect_rate,
+                "feedback_hallucination_rate": feedback_hallucination_rate,
+                "feedback_xml_missing_rate": feedback_xml_missing_rate,
+                "feedback_retrieval_incorrect_rate": feedback_retrieval_incorrect_rate,
+                "feedback_compression_bad_rate": feedback_compression_bad_rate,
+                "feedback_architectural_loss_rate": feedback_architectural_loss_rate,
             },
             totals=totals,
             notes=notes,
@@ -218,6 +241,33 @@ class EvaluationEngine:
                 successful += 1
 
         return round(successful / max(1, len(route_events)), 4)
+
+    def _feedback_verdict_rate(self, feedback_events: list[dict], *, verdict: str) -> float:
+        if not feedback_events:
+            return 0.0
+
+        hits = 0
+        for event in feedback_events:
+            payload = self._nested_dict(event, "payload")
+            if str(payload.get("verdict", "")).strip().lower() == verdict:
+                hits += 1
+
+        return round(hits / max(1, len(feedback_events)), 4)
+
+    def _feedback_issue_rate(self, feedback_events: list[dict], *, issue: str) -> float:
+        if not feedback_events:
+            return 0.0
+
+        hits = 0
+        for event in feedback_events:
+            payload = self._nested_dict(event, "payload")
+            issues = payload.get("issues", [])
+            if not isinstance(issues, list):
+                continue
+            if any(str(item).strip().lower() == issue for item in issues):
+                hits += 1
+
+        return round(hits / max(1, len(feedback_events)), 4)
 
     def _route_totals(self, route_events: list[dict]) -> dict[str, float]:
         total_cost = 0.0

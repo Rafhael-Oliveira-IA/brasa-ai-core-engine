@@ -112,13 +112,29 @@ def test_evaluation_engine_computes_quality_metrics_from_traces() -> None:
                 },
             },
         )
+        _emit(
+            trace_file,
+            {
+                "request_id": "r2",
+                "event_type": "cognitive.feedback",
+                "payload": {
+                    "project_id": "MMO",
+                    "user_id": "u1",
+                    "verdict": "incorrect",
+                    "issues": ["hallucination", "xml_missing", "retrieval_incorrect"],
+                },
+            },
+        )
 
         engine = EvaluationEngine(trace_file=trace_file, report_dir=report_dir)
         report = engine.run(project_id="MMO", user_id="u1", limit=100)
 
-        assert report.sample_size == 4
+        assert report.sample_size == 5
         assert report.metrics["retrieval_precision"] > 0.0
         assert report.metrics["stale_context_rate"] > 0.0
         assert report.metrics["hallucination_rate"] > 0.0
+        assert report.metrics["feedback_incorrect_rate"] > 0.0
+        assert report.metrics["feedback_hallucination_rate"] > 0.0
+        assert report.metrics["feedback_xml_missing_rate"] > 0.0
         assert report.totals["total_cost_usd"] == 0.008
         assert (report_dir / f"evaluation-{report.report_id}.json").exists()

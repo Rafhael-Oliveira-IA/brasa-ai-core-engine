@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.contracts import ContextPacket, ModelTier, ProviderResponse, RequestEnvelope, RouteDecision
 from app.providers.base import BaseProvider, ProviderFailure, ProviderUnavailable
 from app.settings import Settings
@@ -127,8 +129,26 @@ class AIRouter:
         envelope: RequestEnvelope,
         context: ContextPacket,
     ) -> tuple[ProviderResponse, RouteDecision]:
+        require_alibaba_final = self._requires_alibaba_final_response(envelope)
+        provider_prompt = envelope.prompt
+
+        if require_alibaba_final and self._is_chat_task(envelope):
+            provider_prompt = await self._build_chat_final_prompt(
+                envelope=envelope,
+                context=context,
+            )
+
         start_tier, start_reason = self.routing_policy.choose_starting_tier(envelope, context)
+        if require_alibaba_final and start_tier == ModelTier.LOCAL:
+            start_tier = ModelTier.FLASH
+            start_reason = "chat policy requires Alibaba final response"
+
         candidate_tiers = self._tiers_from(start_tier)
+        if require_alibaba_final:
+            candidate_tiers = [tier for tier in candidate_tiers if tier != ModelTier.LOCAL]
+        if not candidate_tiers:
+            candidate_tiers = [ModelTier.FLASH, ModelTier.PLUS, ModelTier.MAX]
+
         max_depth = min(self.settings.max_escalation_depth, len(candidate_tiers) - 1)
 
         last_reason = f"starting tier: {start_reason}"
@@ -139,18 +159,23 @@ class AIRouter:
 
             estimated_cost = self.cost_engine.estimate(
                 tier=tier,
-                prompt=envelope.prompt,
+                prompt=provider_prompt,
                 context=context,
             )
             if tier != ModelTier.LOCAL and estimated_cost > self.settings.request_budget_usd:
-                last_reason = "budget cap reached before external provider"
-                break
+                if require_alibaba_final and self.settings.chat_force_alibaba_ignore_budget:
+                    last_reason = (
+                        "budget cap exceeded but continuing due chat Alibaba policy"
+                    )
+                else:
+                    last_reason = "budget cap reached before external provider"
+                    break
 
             provider, model_name = self._provider_and_model_for_tier(tier)
 
             try:
                 response = await provider.generate(
-                    prompt=envelope.prompt,
+                    prompt=provider_prompt,
                     context=context,
                     model_name=model_name,
                 )
@@ -176,6 +201,11 @@ class AIRouter:
 
             return response, decision
 
+        if require_alibaba_final:
+            raise ProviderUnavailable(
+                f"external-chat-required: no Alibaba response available ({last_reason})"
+            )
+
         fallback = await self.local_provider.generate(
             prompt=envelope.prompt,
             context=context,
@@ -190,6 +220,107 @@ class AIRouter:
             estimated_cost_usd=0.0,
         )
         return fallback, decision
+
+    async def _build_chat_final_prompt(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+    ) -> str:
+        local_draft = ""
+        if self.settings.chat_local_assist_enabled:
+            local_draft = await self._generate_local_chat_draft(
+                prompt=envelope.prompt,
+                context=context,
+            )
+
+        retrieval_summary = self._chat_retrieval_summary(
+            envelope=envelope,
+            context=context,
+        )
+        local_draft_block = local_draft if local_draft else "No local draft available."
+
+        return (
+            "You are generating the final user-facing chat answer.\n"
+            "Use project evidence from the provided context as the primary source of truth.\n"
+            "When evidence is missing, be explicit about uncertainty instead of filling gaps with generic assumptions.\n"
+            "Return only the final answer in the same language as the user request.\n"
+            "Do not mention internal routing, local drafting, or model selection.\n\n"
+            "Output contract (mandatory):\n"
+            "1) Confirmed in project: only facts supported by provided sources.\n"
+            "2) Hypotheses or missing evidence: list what is uncertain or absent.\n"
+            "3) Quick verification path: files/functions to inspect next.\n\n"
+            "Hard rules:\n"
+            "- Do not invent formulas, constants, percentages, item multipliers, or function names.\n"
+            "- If a numeric value is not present in the evidence, explicitly say it is not confirmed.\n"
+            "- Prefer citing source identifiers like artifact:file:... when stating confirmed facts.\n\n"
+            f"User request:\n{envelope.prompt}\n\n"
+            f"Local retrieval summary:\n{retrieval_summary}\n\n"
+            f"Local draft (optional, may be incomplete):\n{local_draft_block}"
+        )
+
+    async def _generate_local_chat_draft(
+        self,
+        *,
+        prompt: str,
+        context: ContextPacket,
+    ) -> str:
+        try:
+            response = await self.local_provider.generate(
+                prompt=prompt,
+                context=context,
+                model_name=self.settings.local_model_name,
+            )
+        except (ProviderUnavailable, ProviderFailure):
+            return ""
+        except Exception:
+            return ""
+
+        answer = (response.answer or "").strip()
+        if not answer:
+            return ""
+
+        limit = max(200, min(self.settings.chat_local_assist_max_chars, 6000))
+        return answer[:limit]
+
+    def _chat_retrieval_summary(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+    ) -> str:
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+        retrieval = metadata.get("retrieval")
+        retrieval_dict = retrieval if isinstance(retrieval, dict) else {}
+
+        evidence_sources: list[dict[str, object]] = []
+        for item in retrieval_dict.get("context_packet", []):
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            if not source:
+                continue
+            evidence_sources.append(
+                {
+                    "source": source,
+                    "score": float(item.get("score") or 0.0),
+                    "hot": bool(item.get("hot", False)),
+                }
+            )
+            if len(evidence_sources) >= 12:
+                break
+
+        summary = {
+            "user_intent": retrieval_dict.get("user_intent", "general-query"),
+            "relevant_systems": list(retrieval_dict.get("relevant_systems", []))[:20],
+            "dependencies": list(retrieval_dict.get("dependencies", []))[:25],
+            "risks": list(retrieval_dict.get("risks", []))[:15],
+            "compression": retrieval_dict.get("compression", {}),
+            "auto_reingest": retrieval_dict.get("auto_reingest", {}),
+            "evidence_sources": evidence_sources,
+            "context_sources": list(context.provenance)[:20],
+        }
+        return json.dumps(summary, ensure_ascii=True, indent=2)
 
     def _should_escalate(
         self,
@@ -219,3 +350,20 @@ class AIRouter:
     def _tiers_from(self, starting_tier: ModelTier) -> list[ModelTier]:
         index = TIER_ORDER.index(starting_tier)
         return TIER_ORDER[index:]
+
+    def _is_chat_task(self, envelope: RequestEnvelope) -> bool:
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+        task_type = str(metadata.get("task_type", "")).strip().lower()
+        return task_type == "chat"
+
+    def _requires_alibaba_final_response(self, envelope: RequestEnvelope) -> bool:
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+
+        if bool(metadata.get("require_alibaba_final_response", False)):
+            return True
+
+        if not self.settings.chat_force_alibaba_response:
+            return False
+
+        task_type = str(metadata.get("task_type", "")).strip().lower()
+        return task_type == "chat"

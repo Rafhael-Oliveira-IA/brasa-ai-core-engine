@@ -6,6 +6,7 @@ from threading import Lock
 from uuid import uuid4
 
 from app.contracts import (
+    CognitiveFeedbackEntry,
     ProviderResponse,
     RequestEnvelope,
     RetrievalResult,
@@ -85,6 +86,24 @@ class TraceLogger:
                 "dependencies_count": len(assembled.get("dependencies", [])),
                 "risks": assembled.get("risks", []),
                 "retrieval": self._retrieval_metrics(retrieval),
+            },
+        )
+        self.emit(event)
+
+    def log_feedback(self, *, trace_id: str, entry: CognitiveFeedbackEntry) -> None:
+        event = TraceEvent(
+            trace_id=trace_id,
+            request_id=entry.request_id or "feedback-only",
+            event_type="cognitive.feedback",
+            payload={
+                "workspace_id": entry.workspace_id,
+                "project_id": entry.project_id,
+                "user_id": entry.user_id,
+                "query": entry.query[:240],
+                "request_id": entry.request_id,
+                "verdict": entry.verdict.value,
+                "issues": [item.value for item in entry.issues],
+                "notes": entry.notes[:500],
             },
         )
         self.emit(event)
