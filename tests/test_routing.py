@@ -144,6 +144,76 @@ def test_router_chat_policy_forces_alibaba_even_when_local_would_suffice() -> No
         assert decision.selected_tier != ModelTier.LOCAL
 
 
+def test_router_uses_planning_role_model_for_action_planning_task() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = Settings(
+            _env_file=None,
+            data_dir=Path(temp_dir) / "data",
+            sqlite_path=Path(temp_dir) / "data" / "memory.db",
+            trace_file=Path(temp_dir) / "data" / "traces.jsonl",
+            reflection_dir=Path(temp_dir) / "data" / "reflection_reports",
+            alibaba_api_key="test-key",
+            alibaba_model_flash="qwen-flash-default",
+            alibaba_model_planning="qwen-planning-specialized",
+        )
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = StubProvider(name="alibaba", confidence=0.90)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="build an execution plan",
+            tier_hint=ModelTier.FLASH,
+            metadata={"task_type": "action_planning"},
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert decision.model_name == "qwen-planning-specialized"
+
+
+def test_router_honors_explicit_model_role_override() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = Settings(
+            _env_file=None,
+            data_dir=Path(temp_dir) / "data",
+            sqlite_path=Path(temp_dir) / "data" / "memory.db",
+            trace_file=Path(temp_dir) / "data" / "traces.jsonl",
+            reflection_dir=Path(temp_dir) / "data" / "reflection_reports",
+            alibaba_api_key="test-key",
+            alibaba_model_flash="qwen-flash-default",
+            alibaba_model_verifier="qwen-verifier-specialized",
+        )
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = StubProvider(name="alibaba", confidence=0.90)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="validate this patch output",
+            tier_hint=ModelTier.FLASH,
+            metadata={"model_role": "verifier"},
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert decision.model_name == "qwen-verifier-specialized"
+
+
 def test_router_chat_uses_local_draft_but_keeps_alibaba_as_final_response() -> None:
     with TemporaryDirectory() as temp_dir:
         settings = build_settings(Path(temp_dir))

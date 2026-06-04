@@ -202,6 +202,15 @@ class ActionPlanner:
         return text.strip("/")
 
     def _prioritize_targets_for_prompt(self, targets: list[str], prompt: str) -> list[str]:
+        if self._is_loot_drop_prompt(prompt):
+            ranked_loot = sorted(
+                ((self._loot_target_priority(target), target) for target in targets),
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            if ranked_loot and ranked_loot[0][0] > 0:
+                return [ranked_loot[0][1]]
+
         if not self._is_ball_rate_prompt(prompt):
             return targets
 
@@ -220,6 +229,34 @@ class ActionPlanner:
 
     def _attach_prompt_specific_mutations(self, *, action: ActionStep, prompt: str) -> None:
         if action.type in {ActionType.CREATE_FILE, ActionType.DELETE_FILE}:
+            return
+
+        if self._is_loot_drop_prompt(prompt):
+            if not self._is_likely_loot_target(action.target):
+                return
+
+            action.type = ActionType.PATCH_FILE
+            action.patches = [
+                ActionPatchOperation(
+                    find=(
+                        r"(?im)^(?!.*fire\s*stone)(\s*.*?)(['\"]?)heart\s*stone\2(.*)$"
+                    ),
+                    replace=r"\g<1>\g<2>heart stone\g<2>\g<3>\n\g<1>\g<2>fire stone\g<2>\g<3>",
+                    replace_all=False,
+                    use_regex=True,
+                ),
+                ActionPatchOperation(
+                    find=(
+                        r"(?im)^(\s*.*?)(heart\s*stone)(.*)$"
+                    ),
+                    replace=r"\g<1>\g<2>\g<3>\n\g<1>fire stone\g<3>",
+                    replace_all=False,
+                    use_regex=True,
+                ),
+            ]
+            action.rationale = (
+                f"{action.rationale}; inferred loot/drop patch to add fire stone alongside heart stone"
+            )
             return
 
         rate_value = self._extract_rate_value(prompt)
@@ -335,6 +372,40 @@ class ActionPlanner:
             return True
         return False
 
+    def _is_likely_loot_target(self, target: str) -> bool:
+        lower = target.replace("\\", "/").lower()
+        scoped = f"/{lower.strip('/')}/"
+        if not lower.endswith((".lua", ".xml", ".json")):
+            return False
+        if "/data/monster/" in scoped or "/data/monsters/" in scoped:
+            return True
+        if "/loot/" in scoped:
+            return True
+        if "drop" in lower or "stone" in lower:
+            return True
+        if lower.endswith("/items.xml"):
+            return True
+        return False
+
+    def _loot_target_priority(self, target: str) -> int:
+        lower = target.replace("\\", "/").lower()
+        scoped = f"/{lower.strip('/')}/"
+        if not lower.endswith((".lua", ".xml", ".json")):
+            return 0
+        if "/data/monster/" in scoped or "/data/monsters/" in scoped:
+            return 5
+        if "/loot/" in scoped:
+            return 4
+        if "drop" in lower and "/data/scripts/" in scoped:
+            return 4
+        if "stone" in lower and "/data/scripts/" in scoped:
+            return 3
+        if lower.endswith("/items.xml"):
+            return 2
+        if self._is_catch_formula_target(lower):
+            return -1
+        return 0
+
     def _ball_rate_target_priority(self, target: str) -> int:
         lower = target.replace("\\", "/").lower()
         if not lower.endswith((".lua", ".py", ".json", ".yml", ".yaml", ".toml", ".ini")):
@@ -358,6 +429,29 @@ class ActionPlanner:
             r"(?:aumenta|aumente|increase|add|somar|soma|incrementa|increment)\D{0,20}(?:em|by|\+)\s*\d+(?:\.\d+)?",
         )
         return any(re.search(pattern, lower, flags=re.IGNORECASE) for pattern in plus_patterns)
+
+    def _is_loot_drop_prompt(self, prompt: str) -> bool:
+        lower = prompt.lower()
+        has_drop = any(term in lower for term in {"drop", "loot", "dropar", "dropa"})
+        has_item = any(term in lower for term in {"stone", "item", "heart stone", "fire stone", "pedra"})
+        has_monster = any(term in lower for term in {"pokemon", "monstro", "monster", "arcanine", "arcaninie"})
+        has_action = any(
+            term in lower
+            for term in {
+                "adicionar",
+                "adiciona",
+                "incluir",
+                "inclui",
+                "add",
+                "include",
+                "ajusta",
+                "ajustar",
+                "corrige",
+                "corrigir",
+                "fix",
+            }
+        )
+        return has_drop and (has_item or has_monster or has_action)
 
 
 class ActionValidator:

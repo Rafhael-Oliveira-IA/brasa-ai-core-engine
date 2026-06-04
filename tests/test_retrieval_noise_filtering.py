@@ -626,3 +626,80 @@ def test_xml_focused_queries_always_select_matching_xml_file(
         packet, _ = engine.assemble(envelope)
         sources = [item.source for item in packet.snippets]
         assert f"artifact:file:{xml_path}" in sources
+
+
+def test_item_loot_focused_queries_keep_items_xml_under_compression_pressure() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        write_json(
+            metadata_root / "data" / "items" / "items.meta.json",
+            {
+                "path": "data/items/items.xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["id", "type", "script"],
+                "symbols": ["items"],
+                "confidence": 0.95,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "items" / "items.summary.md",
+            "# items xml\nitem definitions for stones and loot-linked item ids\n",
+        )
+
+        write_json(
+            metadata_root / "data" / "monster" / "kanto" / "arcaninie.meta.json",
+            {
+                "path": "data/monster/kanto/arcaninie.xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["loot", "heart stone", "fire stone"],
+                "symbols": ["arcaninie"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "monster" / "kanto" / "arcaninie.summary.md",
+            "# arcaninie\nloot table references stones and drop conditions\n",
+        )
+
+        # Add many high-signal runtime candidates to create budget pressure.
+        for index in range(1, 14):
+            noisy_path = f"data/scripts/noisy/drop_logic_{index}.lua"
+            write_json(
+                metadata_root / "data" / "scripts" / "noisy" / f"drop_logic_{index}.meta.json",
+                {
+                    "path": noisy_path,
+                    "modified_at": "2026-06-03T12:00:00+00:00",
+                    "dependencies": ["loot", "drop", "stone"],
+                    "symbols": [f"DropLogic{index}"],
+                    "confidence": 0.96,
+                },
+            )
+            write_text(
+                summaries_root / "data" / "scripts" / "noisy" / f"drop_logic_{index}.summary.md",
+                "# drop runtime\n"
+                "runtime drop and loot flow for stone rewards in monster battles\n" * 35,
+            )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=950,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt="o arcaninie deveria dropar fire stone no lugar de heart stone?",
+        )
+
+        packet, _ = engine.assemble(envelope)
+        sources = [item.source for item in packet.snippets]
+
+        assert "artifact:file:data/items/items.xml" in sources
+        assert any(source.startswith("artifact:file:data/monster/") for source in sources)
