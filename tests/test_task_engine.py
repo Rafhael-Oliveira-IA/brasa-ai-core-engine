@@ -44,7 +44,11 @@ class StubContextBuilder:
 
 
 class StubRouter:
+    def __init__(self) -> None:
+        self.last_envelope = None
+
     async def generate(self, *, envelope, context):
+        self.last_envelope = envelope
         response = ProviderResponse(
             answer="Plan ready with phases and risk controls.",
             confidence=0.86,
@@ -96,9 +100,10 @@ def test_task_engine_runs_pipeline_with_memory_and_reflection() -> None:
         telemetry = StubTelemetry()
         reflection = StubReflection()
 
+        router = StubRouter()
         engine = CognitiveTaskEngine(
             context_builder=StubContextBuilder(),
-            router=StubRouter(),
+            router=router,
             telemetry=telemetry,
             memory_repository=repository,
             reflection=reflection,
@@ -131,3 +136,34 @@ def test_task_engine_runs_pipeline_with_memory_and_reflection() -> None:
         assert reflection.calls == 1
         assert telemetry.retrieval_logged == 1
         assert telemetry.route_logged == 1
+        assert router.last_envelope is not None
+        assert router.last_envelope.metadata.get("require_alibaba_final_response") is False
+
+
+def test_task_engine_chat_sets_alibaba_final_flag() -> None:
+    with TemporaryDirectory() as temp_dir:
+        repository = MemoryRepository(Path(temp_dir) / "memory.db")
+        telemetry = StubTelemetry()
+        router = StubRouter()
+
+        engine = CognitiveTaskEngine(
+            context_builder=StubContextBuilder(),
+            router=router,
+            telemetry=telemetry,
+            memory_repository=repository,
+            reflection=None,
+        )
+
+        task = TaskRequest(
+            project_id="MMO",
+            user_id="u1",
+            task_type=TaskType.CHAT,
+            prompt="explica o sistema",
+            options=TaskExecutionOptions(persist_memory=False, run_reflection=False),
+        )
+
+        response, _ = asyncio.run(engine.run(task))
+
+        assert response.task_type == TaskType.CHAT
+        assert router.last_envelope is not None
+        assert router.last_envelope.metadata.get("require_alibaba_final_response") is True

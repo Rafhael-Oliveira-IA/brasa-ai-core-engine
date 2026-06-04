@@ -30,6 +30,7 @@ from app.contracts import (
     ValidationSeverity,
 )
 from app.memory.repository import MemoryRepository
+from app.workspace import split_scoped_project_id
 
 
 FILE_PATH_PATTERN = re.compile(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,10})")
@@ -225,10 +226,39 @@ class ActionPlanner:
         action.type = ActionType.PATCH_FILE
         action.patches = [
             ActionPatchOperation(
-                find=r"(?im)(\b(?:balls?_?rate|rate_?balls?)\b\s*=\s*)(\d+(?:\.\d+)?)",
+                find=(
+                    r"(?im)"
+                    r"((?:[A-Za-z_][A-Za-z0-9_\.]*\s*\[\s*['\"]?[A-Za-z_]*balls?[A-Za-z_]*rate[A-Za-z_]*['\"]?\s*\]"
+                    r"|\[\s*['\"]?[A-Za-z_]*balls?[A-Za-z_]*rate[A-Za-z_]*['\"]?\s*\]"
+                    r"|\b[A-Za-z_]*balls?[A-Za-z_]*rate[A-Za-z_]*\b)\s*(?:=|:)\s*)"
+                    r"(\d+(?:\.\d+)?)"
+                ),
                 replace=rf"\g<1>{rate_value}",
                 use_regex=True,
-            )
+            ),
+            ActionPatchOperation(
+                find=(
+                    r"(?im)"
+                    r"((?:\b[A-Za-z_]*rate[A-Za-z_]*\b\s*\[\s*['\"][^'\"]*balls?[^'\"]*['\"]\s*\])\s*=\s*)"
+                    r"(\d+(?:\.\d+)?)"
+                ),
+                replace=rf"\g<1>{rate_value}",
+                use_regex=True,
+            ),
+            ActionPatchOperation(
+                find=(
+                    r"(?im)"
+                    r"((?:\b[A-Za-z_]*balls?[A-Za-z_]*\b\s*\[\s*['\"][^'\"]*rate[^'\"]*['\"]\s*\])\s*=\s*)"
+                    r"(\d+(?:\.\d+)?)"
+                ),
+                replace=rf"\g<1>{rate_value}",
+                use_regex=True,
+            ),
+            ActionPatchOperation(
+                find=r"(?im)^(\s*[^\n#]*ball[^\n#]*rate[^\n#]*[=:]\s*)(\d+(?:\.\d+)?)(\s*,?\s*)$",
+                replace=rf"\g<1>{rate_value}\g<3>",
+                use_regex=True,
+            ),
         ]
         action.rationale = (
             f"{action.rationale}; inferred balls-rate parameter patch from intent"
@@ -550,13 +580,15 @@ class ActionExecutor:
 
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         operations = payload.get("operations", [])
+        workspace_root_value = str(payload.get("workspace_root") or "").strip()
+        workspace_root = Path(workspace_root_value).resolve() if workspace_root_value else self.workspace_root
 
         for item in reversed(operations):
             op_type = str(item.get("op") or "")
             target = str(item.get("target") or "")
             backup = str(item.get("backup") or "")
 
-            target_path = (self.workspace_root / target).resolve()
+            target_path = (workspace_root / target).resolve()
 
             if op_type == "create":
                 if target_path.exists():
@@ -740,20 +772,26 @@ class ActionExecutor:
             return None
 
         updated = original
+        matched_any = False
         for patch in patches:
             if patch.use_regex:
                 count = 0 if patch.replace_all else 1
-                updated, changed = re.subn(patch.find, patch.replace, updated, count=count)
-                if changed <= 0:
-                    raise ValueError("Patch regex did not match file contents.")
+                candidate, changed = re.subn(patch.find, patch.replace, updated, count=count)
+                if changed > 0:
+                    updated = candidate
+                    matched_any = True
                 continue
 
             if patch.find not in updated:
-                raise ValueError("Patch find text not found in file.")
+                continue
             if patch.replace_all:
                 updated = updated.replace(patch.find, patch.replace)
             else:
                 updated = updated.replace(patch.find, patch.replace, 1)
+            matched_any = True
+
+        if not matched_any:
+            raise ValueError("Patch patterns did not match file contents.")
 
         return updated
 
@@ -777,6 +815,7 @@ class ActionExecutor:
         payload = {
             "execution_id": execution_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "workspace_root": self.workspace_root.as_posix(),
             "operations": operations,
         }
         (execution_dir / "manifest.json").write_text(
@@ -838,9 +877,11 @@ class CognitiveActionEngine:
         return plan, retrieval
 
     def execute(self, request: ActionExecuteRequest) -> ActionExecutionReport:
+        execution_workspace_root = self._resolve_execution_workspace_root(request=request)
+
         validation = self.validator.validate(
             plan=request.plan,
-            workspace_root=self.workspace_root,
+            workspace_root=execution_workspace_root,
             blocked_path_prefixes=self.blocked_path_prefixes,
             allow_high_risk=request.options.allow_high_risk,
             allow_delete=self.allow_delete,
@@ -848,7 +889,14 @@ class CognitiveActionEngine:
             max_file_bytes=self.max_file_bytes,
         )
 
-        report = self.executor.execute(
+        executor = ActionExecutor(
+            workspace_root=execution_workspace_root,
+            backup_root=self.backup_root,
+            allow_delete=self.allow_delete,
+            max_file_bytes=self.max_file_bytes,
+        )
+
+        report = executor.execute(
             plan=request.plan,
             options=request.options,
             validation=validation,
@@ -879,3 +927,56 @@ class CognitiveActionEngine:
 
     def rollback(self, request: ActionRollbackRequest) -> ActionRollbackReport:
         return self.executor.rollback(execution_id=request.execution_id)
+
+    def _resolve_execution_workspace_root(self, *, request: ActionExecuteRequest) -> Path:
+        resolved = self._resolve_project_source_path(
+            workspace_id=request.workspace_id,
+            project_id=request.project_id,
+        )
+        if resolved is not None:
+            return resolved
+
+        resolved = self._resolve_project_source_path(
+            workspace_id=request.plan.workspace_id,
+            project_id=request.plan.project_id,
+        )
+        if resolved is not None:
+            return resolved
+
+        return self.workspace_root
+
+    def _resolve_project_source_path(self, *, workspace_id: str, project_id: str) -> Path | None:
+        artifacts_root = getattr(self.context_builder, "project_artifacts_root", None)
+        if not isinstance(artifacts_root, Path):
+            return None
+
+        normalized_workspace, plain_project = split_scoped_project_id(
+            project_id,
+            fallback_workspace_id=workspace_id,
+        )
+
+        files_index = (
+            artifacts_root
+            / "workspaces"
+            / normalized_workspace
+            / plain_project
+            / "raw"
+            / "files_index.json"
+        )
+        if not files_index.exists():
+            return None
+
+        try:
+            payload = json.loads(files_index.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        raw_path = str(payload.get("project_path") or "").strip()
+        if not raw_path:
+            return None
+
+        resolved = Path(raw_path).resolve()
+        if not resolved.exists() or not resolved.is_dir():
+            return None
+
+        return resolved

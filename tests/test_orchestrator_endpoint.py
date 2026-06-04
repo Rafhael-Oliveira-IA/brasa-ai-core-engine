@@ -222,19 +222,18 @@ def test_orchestrator_run_endpoint_updates_ball_rate_without_explicit_filename()
     with TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         source_project = root / "SERVIDOR - ORIGINAL"
-        target_file = source_project / "data" / "lib" / "newfunctions.lua"
+        target_file = source_project / "data" / "lib" / "core" / "newfunctions.lua"
         target_file.parent.mkdir(parents=True, exist_ok=True)
         target_file.write_text(
             (
-                "local config = {\n"
-                "    ballRate = 25,\n"
-                "    catchRate = 10\n"
-                "}\n\n"
+                "local config = {}\n"
+                "config[\"pokeballsRate\"] = 25\n"
+                "config[\"catchRate\"] = 10\n\n"
                 "function getBallsRate()\n"
-                "    return config.ballRate\n"
+                "    return config[\"pokeballsRate\"]\n"
                 "end\n\n"
                 "function getCatchRate()\n"
-                "    return config.catchRate\n"
+                "    return config[\"catchRate\"]\n"
                 "end\n"
             ),
             encoding="utf-8",
@@ -317,11 +316,11 @@ def test_orchestrator_run_endpoint_updates_ball_rate_without_explicit_filename()
             iteration = payload["iterations"][0]
             assert iteration["execution"]["applied"] == 1
             assert iteration["execution"]["failed"] == 0
-            assert "data/lib/newfunctions.lua" in iteration["execution"]["changed_files"]
+            assert "data/lib/core/newfunctions.lua" in iteration["execution"]["changed_files"]
 
             changed = target_file.read_text(encoding="utf-8")
-            assert "ballRate = 40" in changed
-            assert "catchRate = 10" in changed
+            assert 'config["pokeballsRate"] = 40' in changed
+            assert 'config["catchRate"] = 10' in changed
         finally:
             if had_runtime:
                 main_module.app.state.runtime = previous_runtime

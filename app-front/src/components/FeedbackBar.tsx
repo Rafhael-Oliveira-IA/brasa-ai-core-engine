@@ -21,12 +21,15 @@ type Props = {
 
 export default function FeedbackBar({ disabled, onAction }: Props) {
   return (
-    <div className="feedback-row">
+    <div className="feedback-shell">
+      <p className="feedback-caption">Quick judgement</p>
+      <div className="feedback-row">
       {actions.map((action) => (
-        <button key={action.label} disabled={disabled} onClick={() => onAction(action)}>
+        <button className="feedback-btn" key={action.label} disabled={disabled} onClick={() => onAction(action)}>
           {action.label}
         </button>
       ))}
+      </div>
     </div>
   );
 }

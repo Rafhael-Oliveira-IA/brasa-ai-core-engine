@@ -26,6 +26,8 @@ class CognitiveQueryEngine:
 
         routing_metadata = dict(envelope.metadata)
         routing_metadata["retrieval"] = retrieval.assembled
+        routing_metadata["require_alibaba_final_response"] = True
+        routing_metadata.setdefault("task_type", "chat")
         routing_envelope = envelope.model_copy(update={"metadata": routing_metadata})
 
         response, decision = await self.router.generate(

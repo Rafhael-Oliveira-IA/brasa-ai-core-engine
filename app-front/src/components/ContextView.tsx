@@ -8,49 +8,98 @@ export default function ContextView({ context }: Props) {
   if (!context) {
     return (
       <section className="card">
-        <h3>Context View</h3>
-        <p>No context assembled yet.</p>
+        <div className="section-head">
+          <h3>Context Intelligence</h3>
+          <p>Aguardando uma consulta para montar pacote contextual.</p>
+        </div>
       </section>
     );
   }
 
   const assembled = context.retrieval.assembled;
+  const snippets = context.packet.snippets;
+  const compression = assembled.compression;
+  const selectedCount = compression?.selected_count ?? snippets.length;
+  const droppedCount = compression?.dropped_count ?? 0;
+  const usedChars = compression?.used_chars ?? 0;
+  const maxChars = compression?.max_chars ?? 0;
+  const systems = assembled.relevant_systems || [];
+  const dependencies = assembled.dependencies || [];
+  const risks = assembled.risks || [];
 
   return (
     <section className="card">
-      <h3>Context View</h3>
-      <p>
-        snippets: {context.packet.snippets.length} | took: {context.retrieval.took_ms}ms
-      </p>
-
-      <div className="pill-list">
-        {(assembled.relevant_systems || []).slice(0, 12).map((item) => (
-          <span className="pill" key={item}>
-            {item}
-          </span>
-        ))}
+      <div className="section-head">
+        <h3>Context Intelligence</h3>
+        <p>Pacote selecionado para raciocinio, com ranking e compressao.</p>
       </div>
 
-      <h4>Top Context Sources</h4>
-      <ul className="list">
-        {context.packet.snippets.slice(0, 12).map((item) => (
-          <li key={item.source}>
-            <div className="source">{item.source}</div>
-            <div className="meta">score: {item.score.toFixed(4)}</div>
-          </li>
-        ))}
-      </ul>
+      <div className="metric-grid metric-grid-4">
+        <article className="metric-card">
+          <span>snippets</span>
+          <strong>{snippets.length}</strong>
+        </article>
+        <article className="metric-card">
+          <span>retrieval ms</span>
+          <strong>{context.retrieval.took_ms}</strong>
+        </article>
+        <article className="metric-card">
+          <span>selected / dropped</span>
+          <strong>
+            {selectedCount} / {droppedCount}
+          </strong>
+        </article>
+        <article className="metric-card">
+          <span>chars budget</span>
+          <strong>
+            {usedChars}/{maxChars}
+          </strong>
+        </article>
+      </div>
 
-      <h4>Risks</h4>
-      <ul className="list">
-        {(assembled.risks || []).length === 0 ? <li>none</li> : null}
-        {(assembled.risks || []).map((risk, index) => (
-          <li key={`${risk}-${index}`}>{risk}</li>
-        ))}
-      </ul>
+      <div className="panel-grid">
+        <section className="panel-block">
+          <h4>Top Context Sources</h4>
+          <ul className="list tight-list">
+            {snippets.slice(0, 12).map((item) => (
+              <li key={item.source}>
+                <div className="source">{item.source}</div>
+                <div className="meta">score {item.score.toFixed(4)}</div>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-      <h4>Compression</h4>
-      <pre className="code">{JSON.stringify(assembled.compression || {}, null, 2)}</pre>
+        <section className="panel-block">
+          <h4>Systems + Dependencies</h4>
+          <div className="pill-list">
+            {systems.slice(0, 14).map((item) => (
+              <span className="pill" key={item}>
+                {item}
+              </span>
+            ))}
+            {systems.length === 0 ? <span className="pill pill-empty">none</span> : null}
+          </div>
+          <div className="pill-list">
+            {dependencies.slice(0, 14).map((item) => (
+              <span className="pill pill-secondary" key={item}>
+                {item}
+              </span>
+            ))}
+            {dependencies.length === 0 ? <span className="pill pill-empty">no dependencies</span> : null}
+          </div>
+        </section>
+      </div>
+
+      <section className="panel-block">
+        <h4>Risk Signals</h4>
+        <ul className="list tight-list">
+          {risks.length === 0 ? <li>none</li> : null}
+          {risks.map((risk, index) => (
+            <li key={`${risk}-${index}`}>{risk}</li>
+          ))}
+        </ul>
+      </section>
     </section>
   );
 }

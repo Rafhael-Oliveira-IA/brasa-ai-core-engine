@@ -127,8 +127,19 @@ class AIRouter:
         envelope: RequestEnvelope,
         context: ContextPacket,
     ) -> tuple[ProviderResponse, RouteDecision]:
+        require_alibaba_final = self._requires_alibaba_final_response(envelope)
+
         start_tier, start_reason = self.routing_policy.choose_starting_tier(envelope, context)
+        if require_alibaba_final and start_tier == ModelTier.LOCAL:
+            start_tier = ModelTier.FLASH
+            start_reason = "chat policy requires Alibaba final response"
+
         candidate_tiers = self._tiers_from(start_tier)
+        if require_alibaba_final:
+            candidate_tiers = [tier for tier in candidate_tiers if tier != ModelTier.LOCAL]
+        if not candidate_tiers:
+            candidate_tiers = [ModelTier.FLASH, ModelTier.PLUS, ModelTier.MAX]
+
         max_depth = min(self.settings.max_escalation_depth, len(candidate_tiers) - 1)
 
         last_reason = f"starting tier: {start_reason}"
@@ -143,8 +154,13 @@ class AIRouter:
                 context=context,
             )
             if tier != ModelTier.LOCAL and estimated_cost > self.settings.request_budget_usd:
-                last_reason = "budget cap reached before external provider"
-                break
+                if require_alibaba_final and self.settings.chat_force_alibaba_ignore_budget:
+                    last_reason = (
+                        "budget cap exceeded but continuing due chat Alibaba policy"
+                    )
+                else:
+                    last_reason = "budget cap reached before external provider"
+                    break
 
             provider, model_name = self._provider_and_model_for_tier(tier)
 
@@ -175,6 +191,11 @@ class AIRouter:
                 continue
 
             return response, decision
+
+        if require_alibaba_final:
+            raise ProviderUnavailable(
+                f"external-chat-required: no Alibaba response available ({last_reason})"
+            )
 
         fallback = await self.local_provider.generate(
             prompt=envelope.prompt,
@@ -219,3 +240,15 @@ class AIRouter:
     def _tiers_from(self, starting_tier: ModelTier) -> list[ModelTier]:
         index = TIER_ORDER.index(starting_tier)
         return TIER_ORDER[index:]
+
+    def _requires_alibaba_final_response(self, envelope: RequestEnvelope) -> bool:
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+
+        if bool(metadata.get("require_alibaba_final_response", False)):
+            return True
+
+        if not self.settings.chat_force_alibaba_response:
+            return False
+
+        task_type = str(metadata.get("task_type", "")).strip().lower()
+        return task_type == "chat"

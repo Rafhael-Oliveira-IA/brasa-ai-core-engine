@@ -60,6 +60,8 @@ class Settings(BaseSettings):
 
     max_escalation_depth: int = 3
     request_budget_usd: float = 0.20
+    chat_force_alibaba_response: bool = True
+    chat_force_alibaba_ignore_budget: bool = True
 
     enable_reflection_scheduler: bool = False
     reflection_interval_minutes: int = 1440

@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.contracts import ContextPacket, ModelTier, ProviderResponse, RequestEnvelope
-from app.providers.base import BaseProvider
+from app.providers.base import BaseProvider, ProviderUnavailable
 from app.router import AIRouter
 from app.settings import Settings
 
@@ -26,6 +26,14 @@ class StubProvider(BaseProvider):
             total_tokens=30,
             cost_usd=0.0,
         )
+
+
+class FailingProvider(BaseProvider):
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def generate(self, *, prompt: str, context: ContextPacket, model_name: str) -> ProviderResponse:
+        raise ProviderUnavailable("provider unavailable")
 
 
 def build_settings(base_path: Path, *, budget: float = 0.20) -> Settings:
@@ -89,3 +97,55 @@ def test_router_respects_budget_and_falls_back_to_local() -> None:
 
         assert decision.selected_tier == ModelTier.LOCAL
         assert "budget" in decision.reason.lower()
+
+
+def test_router_chat_policy_forces_alibaba_even_when_local_would_suffice() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = build_settings(Path(temp_dir))
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = StubProvider(name="alibaba", confidence=0.85)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="quick chat",
+            metadata={"task_type": "chat"},
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert decision.selected_tier != ModelTier.LOCAL
+
+
+def test_router_chat_policy_does_not_fallback_to_local_when_alibaba_is_unavailable() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = build_settings(Path(temp_dir))
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = FailingProvider(name="alibaba")
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="quick chat",
+            metadata={"task_type": "chat"},
+        )
+
+        try:
+            asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+        except ProviderUnavailable as exc:
+            assert "external-chat-required" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("expected ProviderUnavailable when Alibaba chat policy is enforced")

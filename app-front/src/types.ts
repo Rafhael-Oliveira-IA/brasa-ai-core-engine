@@ -100,6 +100,7 @@ export interface ActionPatchOperation {
   find: string;
   replace: string;
   replace_all: boolean;
+  use_regex?: boolean;
 }
 
 export interface ActionStep {

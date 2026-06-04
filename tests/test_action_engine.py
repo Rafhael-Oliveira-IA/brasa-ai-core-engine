@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.action_engine import CognitiveActionEngine
+from app.context_builder import ContextBuilder
 from app.contracts import (
     ActionExecuteRequest,
     ActionExecutionOptions,
@@ -16,6 +17,7 @@ from app.contracts import (
     ContextPacket,
     RetrievalResult,
 )
+from app.ingestion.pipeline import ProjectIngestionPipeline
 from app.memory.repository import MemoryRepository
 
 
@@ -257,3 +259,141 @@ def test_action_executor_blocks_path_traversal_targets() -> None:
         assert report.applied == 0
         assert report.validation.ok is False
         assert any(issue.code == "invalid_target" for issue in report.validation.issues)
+
+
+def test_action_executor_resolves_source_project_root_from_artifacts() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        runtime_root = root / "runtime"
+        runtime_root.mkdir(parents=True, exist_ok=True)
+
+        source_project = root / "SERVIDOR - ORIGINAL"
+        target_file = source_project / "data" / "scripts" / "systems" / "pokemon" / "pokeballs.lua"
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text(
+            "local config = { ballRate = 25 }\n",
+            encoding="utf-8",
+        )
+
+        ingestion = ProjectIngestionPipeline(output_projects_root=runtime_root / ".brasa")
+        ingestion.run(project_path=source_project, workspace_id="mmo_workspace")
+
+        repository = MemoryRepository(root / "memory.db")
+        context_builder = ContextBuilder(
+            memory_repository=repository,
+            project_artifacts_root=runtime_root / ".brasa",
+        )
+        engine = CognitiveActionEngine(
+            context_builder=context_builder,
+            memory_repository=repository,
+            workspace_root=runtime_root,
+            backup_root=runtime_root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+        )
+
+        plan = ActionPlan(
+            plan_id="plan-artifact-root",
+            workspace_id="mmo_workspace",
+            project_id="mmo_workspace::SERVIDOR - ORIGINAL",
+            user_id="u1",
+            prompt="ajuste balls rate",
+            actions=[
+                ActionStep(
+                    type=ActionType.PATCH_FILE,
+                    target="data/scripts/systems/pokemon/pokeballs.lua",
+                    intent="set ballRate to 40",
+                    patches=[
+                        ActionPatchOperation(
+                            find="ballRate = 25",
+                            replace="ballRate = 40",
+                        )
+                    ],
+                )
+            ],
+        )
+
+        report = engine.execute(
+            ActionExecuteRequest(
+                workspace_id="mmo_workspace",
+                project_id="mmo_workspace::SERVIDOR - ORIGINAL",
+                user_id="u1",
+                plan=plan,
+                options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+            )
+        )
+
+        assert report.applied == 1
+        assert report.failed == 0
+        assert "ballRate = 40" in target_file.read_text(encoding="utf-8")
+
+        rollback = engine.rollback(
+            ActionRollbackRequest(
+                workspace_id="mmo_workspace",
+                project_id="mmo_workspace::SERVIDOR - ORIGINAL",
+                user_id="u1",
+                execution_id=report.execution_id,
+            )
+        )
+
+        assert rollback.restored_files == 1
+        assert "ballRate = 25" in target_file.read_text(encoding="utf-8")
+
+
+def test_action_executor_patches_bracketed_balls_rate_assignment() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        target = root / "data" / "lib" / "core" / "newfunctions.lua"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            (
+                "local config = {}\n"
+                "config[\"pokeballsRate\"] = 25\n"
+                "config[\"catchRate\"] = 10\n"
+            ),
+            encoding="utf-8",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = CognitiveActionEngine(
+            context_builder=StubBallRateContextBuilder(),
+            memory_repository=repository,
+            workspace_root=root,
+            backup_root=root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+        )
+
+        plan, _ = engine.plan(
+            ActionPlanRequest(
+                project_id="MMO",
+                user_id="u1",
+                prompt="ajuste o rate das balls para 40 sem alterar catch",
+            )
+        )
+
+        plan = plan.model_copy(
+            update={
+                "actions": [
+                    action.model_copy(update={"target": "data/lib/core/newfunctions.lua"})
+                    for action in plan.actions
+                ]
+            }
+        )
+
+        report = engine.execute(
+            ActionExecuteRequest(
+                project_id="MMO",
+                user_id="u1",
+                plan=plan,
+                options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+            )
+        )
+
+        assert report.applied == 1
+        assert report.failed == 0
+        changed = target.read_text(encoding="utf-8")
+        assert "config[\"pokeballsRate\"] = 40" in changed
+        assert "config[\"catchRate\"] = 10" in changed

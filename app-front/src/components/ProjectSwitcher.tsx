@@ -24,8 +24,12 @@ export default function ProjectSwitcher(props: Props) {
   }, [props.workspaceId, props.projectId]);
 
   return (
-    <section className="card">
-      <h3>Project Switcher</h3>
+    <section className="card card-accent">
+      <div className="section-head">
+        <h3>Project Scope</h3>
+        <p>Define o workspace ativo para chat, actions e orchestrator.</p>
+      </div>
+
       <div className="row">
         <label>Preset</label>
         <select
@@ -59,6 +63,10 @@ export default function ProjectSwitcher(props: Props) {
       <div className="row">
         <label>User</label>
         <input value={props.userId} onChange={(event) => props.onUserIdChange(event.target.value)} />
+      </div>
+
+      <div className="scope-inline-note">
+        <strong>Current:</strong> {props.workspaceId} :: {props.projectId}
       </div>
     </section>
   );
