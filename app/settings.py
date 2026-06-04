@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     )
     action_allow_delete: bool = False
     action_max_file_bytes: int = 500000
+    action_model_assist_enabled: bool = True
+    action_model_assist_tier: str = "flash"
 
     local_model_name: str = "local-lite-v1"
 

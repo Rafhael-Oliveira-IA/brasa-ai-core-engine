@@ -138,21 +138,6 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         embedding_client=embedding_client,
     )
 
-    blocked_paths = tuple(
-        item.strip()
-        for item in settings.action_blocked_paths.split(",")
-        if item.strip()
-    )
-    action_engine = CognitiveActionEngine(
-        context_builder=context_builder,
-        memory_repository=memory_repository,
-        workspace_root=settings.action_workspace_root,
-        backup_root=settings.action_backup_dir,
-        blocked_path_prefixes=blocked_paths,
-        allow_delete=settings.action_allow_delete,
-        max_file_bytes=settings.action_max_file_bytes,
-    )
-
     local_provider = LocalAdapter(model_name=settings.local_model_name)
     alibaba_provider = AlibabaAdapter(
         api_key=settings.alibaba_api_key,
@@ -170,6 +155,24 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         settings=settings,
         local_provider=local_provider,
         alibaba_provider=alibaba_provider,
+    )
+
+    blocked_paths = tuple(
+        item.strip()
+        for item in settings.action_blocked_paths.split(",")
+        if item.strip()
+    )
+    action_engine = CognitiveActionEngine(
+        context_builder=context_builder,
+        memory_repository=memory_repository,
+        workspace_root=settings.action_workspace_root,
+        backup_root=settings.action_backup_dir,
+        blocked_path_prefixes=blocked_paths,
+        allow_delete=settings.action_allow_delete,
+        max_file_bytes=settings.action_max_file_bytes,
+        router=router,
+        model_assist_enabled=settings.action_model_assist_enabled,
+        model_assist_tier=settings.action_model_assist_tier,
     )
 
     diagnostics_engine = CognitiveDiagnosticsEngine(

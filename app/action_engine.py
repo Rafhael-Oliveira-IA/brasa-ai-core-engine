@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from app.context_builder import ContextBuilder
 from app.contracts import (
+    ContextPacket,
     ActionExecuteRequest,
     ActionExecutionOptions,
     ActionExecutionReport,
@@ -25,12 +28,18 @@ from app.contracts import (
     ActionValidationReport,
     MemoryEntry,
     MemoryScope,
+    ModelTier,
+    ProviderResponse,
     RequestEnvelope,
     RetrievalResult,
+    RouteDecision,
     ValidationSeverity,
 )
 from app.memory.repository import MemoryRepository
 from app.workspace import split_scoped_project_id
+
+if TYPE_CHECKING:
+    from app.router import AIRouter
 
 
 FILE_PATH_PATTERN = re.compile(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,10})")
@@ -841,6 +850,9 @@ class CognitiveActionEngine:
         blocked_path_prefixes: tuple[str, ...],
         allow_delete: bool,
         max_file_bytes: int,
+        router: AIRouter | None = None,
+        model_assist_enabled: bool = True,
+        model_assist_tier: str = "flash",
     ) -> None:
         self.context_builder = context_builder
         self.memory_repository = memory_repository
@@ -849,6 +861,9 @@ class CognitiveActionEngine:
         self.blocked_path_prefixes = tuple(item.strip().replace("\\", "/") for item in blocked_path_prefixes if item)
         self.allow_delete = allow_delete
         self.max_file_bytes = max_file_bytes
+        self.router = router
+        self.model_assist_enabled = model_assist_enabled
+        self.model_assist_tier = self._resolve_model_assist_tier(model_assist_tier)
 
         self.planner = ActionPlanner()
         self.validator = ActionValidator()
@@ -872,9 +887,19 @@ class CognitiveActionEngine:
                 "action_engine_version": "v1",
             },
         )
-        _, retrieval = self.context_builder.build(envelope)
-        plan = self.planner.plan(request=request, retrieval=retrieval)
-        return plan, retrieval
+        context_packet, retrieval = self.context_builder.build(envelope)
+        heuristic_plan = self.planner.plan(request=request, retrieval=retrieval)
+
+        assisted_plan = self._model_assisted_plan(
+            request=request,
+            retrieval=retrieval,
+            context_packet=context_packet,
+            heuristic_plan=heuristic_plan,
+        )
+        if assisted_plan is not None:
+            return assisted_plan, retrieval
+
+        return heuristic_plan, retrieval
 
     def execute(self, request: ActionExecuteRequest) -> ActionExecutionReport:
         execution_workspace_root = self._resolve_execution_workspace_root(request=request)
@@ -927,6 +952,279 @@ class CognitiveActionEngine:
 
     def rollback(self, request: ActionRollbackRequest) -> ActionRollbackReport:
         return self.executor.rollback(execution_id=request.execution_id)
+
+    def _model_assisted_plan(
+        self,
+        *,
+        request: ActionPlanRequest,
+        retrieval: RetrievalResult,
+        context_packet: ContextPacket,
+        heuristic_plan: ActionPlan,
+    ) -> ActionPlan | None:
+        if not self.model_assist_enabled or self.router is None:
+            return None
+
+        prompt = self._build_model_assist_prompt(
+            request=request,
+            retrieval=retrieval,
+            heuristic_plan=heuristic_plan,
+        )
+        envelope = RequestEnvelope(
+            request_id=f"{request.plan_id}-model-assist",
+            workspace_id=request.workspace_id,
+            project_id=request.project_id,
+            user_id=request.user_id,
+            prompt=prompt,
+            tier_hint=self.model_assist_tier,
+            metadata={
+                **request.metadata,
+                "task_type": "action_planning",
+                "action_engine_version": "v1-model-assist",
+                "require_alibaba_final_response": True,
+                "retrieval": retrieval.assembled,
+            },
+        )
+
+        try:
+            response, decision = self._run_router_generate_sync(
+                envelope=envelope,
+                context=context_packet,
+            )
+        except Exception:
+            return None
+
+        payload = self._extract_json_payload(response.answer)
+        if payload is None:
+            return None
+
+        actions = self._deserialize_model_actions(
+            payload=payload,
+            fallback_prompt=request.prompt,
+            max_actions=request.max_actions,
+        )
+        if not actions:
+            return None
+
+        warnings = list(heuristic_plan.warnings)
+        raw_warnings = payload.get("warnings", [])
+        if isinstance(raw_warnings, list):
+            warnings.extend(str(item) for item in raw_warnings[:8])
+
+        warnings.append(
+            f"model-assisted planning applied via {decision.provider}:{decision.model_name}"
+        )
+
+        summary = str(payload.get("summary") or "").strip() or heuristic_plan.summary
+
+        return heuristic_plan.model_copy(
+            update={
+                "summary": summary,
+                "actions": actions,
+                "warnings": warnings,
+            }
+        )
+
+    def _build_model_assist_prompt(
+        self,
+        *,
+        request: ActionPlanRequest,
+        retrieval: RetrievalResult,
+        heuristic_plan: ActionPlan,
+    ) -> str:
+        assembled = retrieval.assembled or {}
+        context_packet = assembled.get("context_packet") or assembled.get("contexts") or []
+
+        candidate_sources: list[str] = []
+        for item in context_packet:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            if source.startswith("artifact:file:"):
+                source = source.removeprefix("artifact:file:")
+            if source and source not in candidate_sources:
+                candidate_sources.append(source)
+
+        heuristic_actions = [
+            {
+                "type": action.type.value,
+                "target": action.target,
+                "risk": action.risk.value,
+                "intent": action.intent,
+            }
+            for action in heuristic_plan.actions[:6]
+        ]
+
+        return (
+            "You are BRASA Action Planner.\n"
+            "Return ONLY valid JSON (no markdown, no explanations) with this schema:\n"
+            "{\n"
+            '  "summary": "string",\n'
+            '  "warnings": ["string"],\n'
+            "  \"actions\": [\n"
+            "    {\n"
+            '      "type": "create_file|update_file|patch_file|delete_file",\n'
+            '      "target": "relative/path.ext",\n'
+            '      "intent": "string",\n'
+            '      "risk": "low|medium|high|critical",\n'
+            '      "rationale": "string",\n'
+            '      "content": "string or null",\n'
+            '      "patches": [\n'
+            "        {\n"
+            '          "find": "string",\n'
+            '          "replace": "string",\n'
+            '          "replace_all": false,\n'
+            '          "use_regex": false\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Prefer candidate target files listed below.\n"
+            "- For parameter tweaks, prefer patch_file with precise patches.\n"
+            "- If unsure, keep a single safest action.\n"
+            "- Never output absolute paths.\n\n"
+            f"User request:\n{request.prompt}\n\n"
+            f"Candidate files:\n{json.dumps(candidate_sources[:30], ensure_ascii=True, indent=2)}\n\n"
+            f"Retrieved systems:\n{json.dumps(assembled.get('relevant_systems', [])[:20], ensure_ascii=True, indent=2)}\n\n"
+            f"Retrieved dependencies:\n{json.dumps(assembled.get('dependencies', [])[:30], ensure_ascii=True, indent=2)}\n\n"
+            f"Heuristic baseline:\n{json.dumps(heuristic_actions, ensure_ascii=True, indent=2)}"
+        )
+
+    def _run_router_generate_sync(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+    ) -> tuple[ProviderResponse, RouteDecision]:
+        if self.router is None:
+            raise RuntimeError("router is not configured")
+
+        coroutine = self.router.generate(envelope=envelope, context=context)
+        try:
+            return asyncio.run(coroutine)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coroutine)
+            finally:
+                loop.close()
+
+    def _extract_json_payload(self, text: str) -> dict[str, Any] | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*```$", "", raw).strip()
+
+        parsed = self._try_parse_json(raw)
+        if parsed is not None:
+            return parsed
+
+        first = raw.find("{")
+        last = raw.rfind("}")
+        if first >= 0 and last > first:
+            return self._try_parse_json(raw[first : last + 1])
+
+        return None
+
+    def _try_parse_json(self, text: str) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _deserialize_model_actions(
+        self,
+        *,
+        payload: dict[str, Any],
+        fallback_prompt: str,
+        max_actions: int,
+    ) -> list[ActionStep]:
+        raw_actions = payload.get("actions", [])
+        if not isinstance(raw_actions, list):
+            return []
+
+        actions: list[ActionStep] = []
+        for raw in raw_actions:
+            if not isinstance(raw, dict):
+                continue
+
+            target = self.planner._normalize_relative_path(str(raw.get("target") or ""))
+            intent = str(raw.get("intent") or fallback_prompt).strip()
+            if not target or len(intent) < 2:
+                continue
+
+            action_type = self._safe_action_type(str(raw.get("type") or "update_file"))
+            risk = self._safe_action_risk(str(raw.get("risk") or "medium"))
+
+            patches: list[ActionPatchOperation] = []
+            raw_patches = raw.get("patches", [])
+            if isinstance(raw_patches, list):
+                for item in raw_patches:
+                    if not isinstance(item, dict):
+                        continue
+                    find = str(item.get("find") or "").strip()
+                    if not find:
+                        continue
+                    patches.append(
+                        ActionPatchOperation(
+                            find=find,
+                            replace=str(item.get("replace") or ""),
+                            replace_all=bool(item.get("replace_all", False)),
+                            use_regex=bool(item.get("use_regex", False)),
+                        )
+                    )
+
+            content_raw = raw.get("content")
+            content = None if content_raw is None else str(content_raw)
+            rationale = str(raw.get("rationale") or "model-assisted planning")
+
+            action = ActionStep(
+                type=action_type,
+                target=target,
+                intent=intent[:500],
+                risk=risk,
+                rationale=rationale,
+                patches=patches,
+                content=content,
+            )
+
+            if action.type in {ActionType.UPDATE_FILE, ActionType.PATCH_FILE} and action.content is None and not action.patches:
+                self.planner._attach_prompt_specific_mutations(action=action, prompt=fallback_prompt)
+
+            actions.append(action)
+            if len(actions) >= max_actions:
+                break
+
+        return actions
+
+    def _safe_action_type(self, value: str) -> ActionType:
+        try:
+            return ActionType(value.strip().lower())
+        except Exception:
+            return ActionType.UPDATE_FILE
+
+    def _safe_action_risk(self, value: str) -> ActionRisk:
+        try:
+            return ActionRisk(value.strip().lower())
+        except Exception:
+            return ActionRisk.MEDIUM
+
+    def _resolve_model_assist_tier(self, value: str) -> ModelTier:
+        raw = (value or "").strip().lower()
+        mapping = {
+            "local": ModelTier.LOCAL,
+            "flash": ModelTier.FLASH,
+            "plus": ModelTier.PLUS,
+            "max": ModelTier.MAX,
+        }
+        return mapping.get(raw, ModelTier.FLASH)
 
     def _resolve_execution_workspace_root(self, *, request: ActionExecuteRequest) -> Path:
         resolved = self._resolve_project_source_path(
