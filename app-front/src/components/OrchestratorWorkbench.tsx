@@ -334,6 +334,7 @@ export default function OrchestratorWorkbench(props: ScopeProps) {
           {status ? <p className="status">{status}</p> : null}
 
           <div className="hint-row">
+            <span className="hint-pill">auto-agent loop</span>
             <span className="hint-pill">human-in-the-loop</span>
             <span className="hint-pill">policy guardrails</span>
             <span className="hint-pill">post-action feedback loop</span>

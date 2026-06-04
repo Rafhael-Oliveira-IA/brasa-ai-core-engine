@@ -232,6 +232,30 @@ class ActionPlanner:
         if not self._is_likely_ball_rate_target(action.target):
             return
 
+        if self._is_catch_formula_target(action.target):
+            if self._is_increment_prompt(prompt):
+                action.type = ActionType.PATCH_FILE
+                action.patches = [
+                    ActionPatchOperation(
+                        find=(
+                            r"(?im)^(\s*local\s+chance\s*=\s*chanceBase\s*\*\s*balls\[ballKey\]\.chanceMultiplier\s*)$"
+                        ),
+                        replace=rf"\g<1>\n    chance = chance + {rate_value}",
+                        use_regex=True,
+                    ),
+                    ActionPatchOperation(
+                        find=(
+                            r"(?im)^(\s*local\s+chance\s*=\s*chanceBase\s*\*\s*[A-Za-z_][A-Za-z0-9_\.\[\]]*\s*)$"
+                        ),
+                        replace=rf"\g<1>\n    chance = chance + {rate_value}",
+                        use_regex=True,
+                    ),
+                ]
+                action.rationale = (
+                    f"{action.rationale}; inferred catch chance additive patch (+{rate_value}) from intent"
+                )
+                return
+
         action.type = ActionType.PATCH_FILE
         action.patches = [
             ActionPatchOperation(
@@ -303,6 +327,8 @@ class ActionPlanner:
         lower = target.replace("\\", "/").lower()
         if not lower.endswith((".lua", ".py", ".json", ".yml", ".yaml", ".toml", ".ini")):
             return False
+        if self._is_catch_formula_target(lower):
+            return True
         if "newfunction" in lower:
             return True
         if "ball" in lower:
@@ -313,11 +339,25 @@ class ActionPlanner:
         lower = target.replace("\\", "/").lower()
         if not lower.endswith((".lua", ".py", ".json", ".yml", ".yaml", ".toml", ".ini")):
             return 0
+        if self._is_catch_formula_target(lower):
+            return 4
         if "newfunction" in lower:
             return 3
         if "ball" in lower:
             return 2
         return 0
+
+    def _is_catch_formula_target(self, target: str) -> bool:
+        lower = target.replace("\\", "/").lower()
+        return lower.endswith("/catch.lua") or lower.endswith("catch.lua")
+
+    def _is_increment_prompt(self, prompt: str) -> bool:
+        lower = prompt.lower()
+        plus_patterns = (
+            r"\+\s*\d+(?:\.\d+)?",
+            r"(?:aumenta|aumente|increase|add|somar|soma|incrementa|increment)\D{0,20}(?:em|by|\+)\s*\d+(?:\.\d+)?",
+        )
+        return any(re.search(pattern, lower, flags=re.IGNORECASE) for pattern in plus_patterns)
 
 
 class ActionValidator:
@@ -1005,10 +1045,26 @@ class CognitiveActionEngine:
         if not actions:
             return None
 
+        planning_workspace_root = self._resolve_execution_workspace_root(
+            request=ActionExecuteRequest(
+                workspace_id=request.workspace_id,
+                project_id=request.project_id,
+                user_id=request.user_id,
+                plan=heuristic_plan,
+                options=ActionExecutionOptions(dry_run=True),
+            )
+        )
+        actions, refinement_notes = self._refine_model_actions(
+            actions=actions,
+            fallback_prompt=request.prompt,
+            workspace_root=planning_workspace_root,
+        )
+
         warnings = list(heuristic_plan.warnings)
         raw_warnings = payload.get("warnings", [])
         if isinstance(raw_warnings, list):
             warnings.extend(str(item) for item in raw_warnings[:8])
+        warnings.extend(refinement_notes[:8])
 
         warnings.append(
             f"model-assisted planning applied via {decision.provider}:{decision.model_name}"
@@ -1203,6 +1259,160 @@ class CognitiveActionEngine:
                 break
 
         return actions
+
+    def _refine_model_actions(
+        self,
+        *,
+        actions: list[ActionStep],
+        fallback_prompt: str,
+        workspace_root: Path,
+    ) -> tuple[list[ActionStep], list[str]]:
+        refined: list[ActionStep] = []
+        notes: list[str] = []
+
+        for action in actions:
+            candidate = action.model_copy(deep=True)
+
+            if self.planner._is_ball_rate_prompt(fallback_prompt):
+                retargeted = self._retarget_ball_rate_action_if_needed(
+                    action=candidate,
+                    workspace_root=workspace_root,
+                )
+                if retargeted:
+                    notes.append(
+                        f"retargeted action target to {candidate.target} based on workspace evidence"
+                    )
+
+            if candidate.type in {ActionType.UPDATE_FILE, ActionType.PATCH_FILE} and candidate.content is None:
+                if not candidate.patches:
+                    self.planner._attach_prompt_specific_mutations(
+                        action=candidate,
+                        prompt=fallback_prompt,
+                    )
+
+                if candidate.patches and not self._patches_match_target(
+                    action=candidate,
+                    workspace_root=workspace_root,
+                ):
+                    original_target = candidate.target
+                    candidate.patches = []
+                    self.planner._attach_prompt_specific_mutations(
+                        action=candidate,
+                        prompt=fallback_prompt,
+                    )
+
+                    if candidate.patches and self._patches_match_target(
+                        action=candidate,
+                        workspace_root=workspace_root,
+                    ):
+                        notes.append(
+                            f"repaired patch operations using heuristic mutations for {candidate.target}"
+                        )
+                    else:
+                        alternate = self._infer_alternate_ball_rate_target(
+                            current_target=original_target,
+                            workspace_root=workspace_root,
+                        )
+                        if alternate is not None:
+                            candidate.target = alternate
+                            candidate.patches = []
+                            self.planner._attach_prompt_specific_mutations(
+                                action=candidate,
+                                prompt=fallback_prompt,
+                            )
+                            if candidate.patches and self._patches_match_target(
+                                action=candidate,
+                                workspace_root=workspace_root,
+                            ):
+                                notes.append(
+                                    f"moved patch target from {original_target} to {candidate.target} for patch match"
+                                )
+
+            refined.append(candidate)
+
+        return refined, notes
+
+    def _retarget_ball_rate_action_if_needed(self, *, action: ActionStep, workspace_root: Path) -> bool:
+        normalized_target, target_path = self.validator._resolve_target(
+            workspace_root=workspace_root,
+            target=action.target,
+        )
+
+        if target_path is not None and target_path.exists():
+            return False
+
+        alternate = self._infer_alternate_ball_rate_target(
+            current_target=normalized_target or action.target,
+            workspace_root=workspace_root,
+        )
+        if alternate is None:
+            return False
+
+        action.target = alternate
+        return True
+
+    def _infer_alternate_ball_rate_target(self, *, current_target: str, workspace_root: Path) -> str | None:
+        normalized = current_target.replace("\\", "/").lower()
+        candidates = [
+            "data/actions/scripts/poke/catch.lua",
+            "data/actions/scripts/poke/catch.lua",
+            "data/lib/core/newfunctions.lua",
+            "data/scripts/systems/pokemon/pokeballs.lua",
+        ]
+
+        for item in candidates:
+            normalized_item, target_path = self.validator._resolve_target(
+                workspace_root=workspace_root,
+                target=item,
+            )
+            if not normalized_item or target_path is None:
+                continue
+            if target_path.exists() and target_path.is_file():
+                if normalized.endswith("pokeballs.lua") and normalized_item.endswith("catch.lua"):
+                    return normalized_item
+                if not normalized.endswith(Path(normalized_item).name):
+                    return normalized_item
+
+        try:
+            for file_path in workspace_root.rglob("catch.lua"):
+                if not file_path.is_file():
+                    continue
+                relative = file_path.relative_to(workspace_root).as_posix()
+                return relative
+        except Exception:
+            return None
+
+        return None
+
+    def _patches_match_target(self, *, action: ActionStep, workspace_root: Path) -> bool:
+        if action.content is not None:
+            return True
+
+        normalized_target, target_path = self.validator._resolve_target(
+            workspace_root=workspace_root,
+            target=action.target,
+        )
+        if not normalized_target or target_path is None or not target_path.exists() or not target_path.is_file():
+            return False
+
+        try:
+            content = target_path.read_text(encoding="utf-8")
+        except Exception:
+            return False
+
+        for patch in action.patches:
+            if patch.use_regex:
+                try:
+                    if re.search(patch.find, content) is not None:
+                        return True
+                except re.error:
+                    continue
+                continue
+
+            if patch.find and patch.find in content:
+                return True
+
+        return False
 
     def _safe_action_type(self, value: str) -> ActionType:
         try:

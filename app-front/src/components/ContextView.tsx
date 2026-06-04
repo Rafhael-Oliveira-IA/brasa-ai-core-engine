@@ -26,6 +26,10 @@ export default function ContextView({ context }: Props) {
   const systems = assembled.relevant_systems || [];
   const dependencies = assembled.dependencies || [];
   const risks = assembled.risks || [];
+  const autoReingest = assembled.auto_reingest;
+  const autoReingestSync = autoReingest?.sync;
+  const autoReingestStatus = autoReingestSync?.status || "idle";
+  const artifactEvidence = snippets.filter((item) => item.source.startsWith("artifact:file:")).length;
 
   return (
     <section className="card">
@@ -54,6 +58,14 @@ export default function ContextView({ context }: Props) {
           <strong>
             {usedChars}/{maxChars}
           </strong>
+        </article>
+        <article className="metric-card">
+          <span>artifact evidence</span>
+          <strong>{artifactEvidence}</strong>
+        </article>
+        <article className="metric-card">
+          <span>auto reingest</span>
+          <strong>{autoReingestStatus}</strong>
         </article>
       </div>
 
@@ -99,6 +111,27 @@ export default function ContextView({ context }: Props) {
             <li key={`${risk}-${index}`}>{risk}</li>
           ))}
         </ul>
+      </section>
+
+      <section className="panel-block">
+        <h4>Auto Reingest</h4>
+        {!autoReingest ? <p className="muted">No auto-reingest diagnostics.</p> : null}
+        {autoReingest ? (
+          <dl className="kv-grid">
+            <dt>triggered</dt>
+            <dd>{String(Boolean(autoReingest.triggered))}</dd>
+            <dt>reason</dt>
+            <dd>{autoReingest.reason || "-"}</dd>
+            <dt>context reasons</dt>
+            <dd>{(autoReingest.context_reasons || []).join(", ") || "-"}</dd>
+            <dt>sync status</dt>
+            <dd>{autoReingestSync?.status || "-"}</dd>
+            <dt>sync files</dt>
+            <dd>{autoReingestSync?.scanned_files ?? 0}</dd>
+            <dt>changed nodes</dt>
+            <dd>{autoReingestSync?.changed_nodes ?? 0}</dd>
+          </dl>
+        ) : null}
       </section>
     </section>
   );

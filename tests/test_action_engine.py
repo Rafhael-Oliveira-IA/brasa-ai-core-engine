@@ -78,6 +78,40 @@ class StubBallRateContextBuilder:
         return packet, retrieval
 
 
+class StubCatchRateContextBuilder:
+    def build(self, envelope):
+        packet = ContextPacket(
+            provenance=[
+                "artifact:file:data/scripts/systems/pokemon/pokeballs.lua",
+                "artifact:file:data/actions/scripts/poke/catch.lua",
+            ]
+        )
+        retrieval = RetrievalResult(
+            query=envelope.prompt,
+            entries=[],
+            took_ms=5,
+            assembled={
+                "user_intent": "generation",
+                "relevant_systems": ["Pokemon"],
+                "dependencies": ["getCatchChanceByLevel", "balls"],
+                "risks": [],
+                "context_packet": [
+                    {
+                        "source": "artifact:file:data/scripts/systems/pokemon/pokeballs.lua",
+                        "type": "artifact",
+                        "score": 0.91,
+                    },
+                    {
+                        "source": "artifact:file:data/actions/scripts/poke/catch.lua",
+                        "type": "artifact",
+                        "score": 0.95,
+                    },
+                ],
+            },
+        )
+        return packet, retrieval
+
+
 class StubModelAssistRouter:
     def __init__(self) -> None:
         self.calls = 0
@@ -115,6 +149,50 @@ class StubModelAssistRouter:
             prompt_tokens=120,
             completion_tokens=150,
             total_tokens=270,
+            cost_usd=0.004,
+        )
+        decision = RouteDecision(
+            selected_tier=ModelTier.FLASH,
+            provider="alibaba",
+            model_name="qwen-turbo",
+            reason="model-assisted planning",
+            escalation_depth=0,
+            estimated_cost_usd=0.004,
+        )
+        return response, decision
+
+
+class StubModelAssistRouterWithNonMatchingPatch:
+    async def generate(self, *, envelope, context):
+        payload = {
+            "summary": "Model-assisted plan",
+            "warnings": ["generated_by_alibaba"],
+            "actions": [
+                {
+                    "type": "patch_file",
+                    "target": "data/scripts/systems/pokemon/pokeballs.lua",
+                    "intent": "increase catch rate by +2",
+                    "risk": "medium",
+                    "rationale": "attempt patch in pokeballs",
+                    "patches": [
+                        {
+                            "find": "-- Configuracoes de Catch Rate",
+                            "replace": "-- Configuracoes de Catch Rate\nlocal CATCH_RATE_BONUS = 2",
+                            "replace_all": False,
+                            "use_regex": False,
+                        }
+                    ],
+                }
+            ],
+        }
+        response = ProviderResponse(
+            answer=json.dumps(payload, ensure_ascii=True),
+            confidence=0.89,
+            provider="alibaba",
+            model_name="qwen-turbo",
+            prompt_tokens=120,
+            completion_tokens=140,
+            total_tokens=260,
             cost_usd=0.004,
         )
         decision = RouteDecision(
@@ -235,6 +313,70 @@ def test_action_planner_can_use_model_assist_for_generic_changes() -> None:
         assert plan.actions[0].target == "data/lib/core/newfunctions.lua"
         assert plan.actions[0].patches
         assert plan.actions[0].patches[0].use_regex is True
+
+
+def test_action_planner_repairs_non_matching_model_patch_for_catch_rate() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        pokeballs = root / "data" / "scripts" / "systems" / "pokemon" / "pokeballs.lua"
+        catch_file = root / "data" / "actions" / "scripts" / "poke" / "catch.lua"
+        pokeballs.parent.mkdir(parents=True, exist_ok=True)
+        catch_file.parent.mkdir(parents=True, exist_ok=True)
+
+        pokeballs.write_text(
+            "function pokeball_doOnUse(player, item)\n    return true\nend\n",
+            encoding="utf-8",
+        )
+        catch_file.write_text(
+            (
+                "local chanceBase = 10\n"
+                "local ballKey = 'pokeball'\n"
+                "local chance = chanceBase * balls[ballKey].chanceMultiplier\n"
+            ),
+            encoding="utf-8",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = CognitiveActionEngine(
+            context_builder=StubCatchRateContextBuilder(),
+            memory_repository=repository,
+            workspace_root=root,
+            backup_root=root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+            router=StubModelAssistRouterWithNonMatchingPatch(),
+            model_assist_enabled=True,
+            model_assist_tier="flash",
+        )
+
+        plan, _ = engine.plan(
+            ActionPlanRequest(
+                project_id="MMO",
+                user_id="u1",
+                prompt="aumente o catch rate das balls em +2 com patch minimo e seguro",
+            )
+        )
+
+        assert len(plan.actions) == 1
+        action = plan.actions[0]
+        assert action.target == "data/actions/scripts/poke/catch.lua"
+        assert action.type == ActionType.PATCH_FILE
+        assert any("chance = chance + 2" in patch.replace for patch in action.patches)
+
+        report = engine.execute(
+            ActionExecuteRequest(
+                project_id="MMO",
+                user_id="u1",
+                plan=plan,
+                options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+            )
+        )
+
+        assert report.applied == 1
+        assert report.failed == 0
+        updated = catch_file.read_text(encoding="utf-8")
+        assert "chance = chance + 2" in updated
 
 
 def test_action_executor_updates_file_and_rollback_restores_original_content() -> None:

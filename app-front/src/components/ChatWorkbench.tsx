@@ -116,6 +116,10 @@ export default function ChatWorkbench(props: ScopeProps) {
   const droppedByBudget = context?.retrieval.assembled.compression?.dropped_count || 0;
   const usedChars = context?.retrieval.assembled.compression?.used_chars || 0;
   const maxChars = context?.retrieval.assembled.compression?.max_chars || 0;
+  const autoReingestStatus = context?.retrieval.assembled.auto_reingest?.sync?.status || "idle";
+  const autoReingestReason = context?.retrieval.assembled.auto_reingest?.reason || "not_available";
+  const artifactEvidenceCount =
+    context?.packet.snippets.filter((item) => item.source.startsWith("artifact:file:")).length || 0;
 
   const topFailures = Object.entries(diagnostics?.failure_counts || {})
     .sort((a, b) => b[1] - a[1])
@@ -158,6 +162,8 @@ export default function ChatWorkbench(props: ScopeProps) {
 
           <div className="hint-row">
             <span className="hint-pill">chat + retrieval</span>
+            <span className="hint-pill">grounded evidence</span>
+            <span className="hint-pill">auto-reingest</span>
             <span className="hint-pill">diagnostics</span>
             <span className="hint-pill">trace timeline</span>
           </div>
@@ -217,6 +223,14 @@ export default function ChatWorkbench(props: ScopeProps) {
                 {usedChars}/{maxChars}
               </strong>
             </article>
+            <article className="metric-card">
+              <span>artifact evidence</span>
+              <strong>{artifactEvidenceCount}</strong>
+            </article>
+            <article className="metric-card">
+              <span>auto reingest</span>
+              <strong>{autoReingestStatus}</strong>
+            </article>
           </div>
 
           <div className="panel-grid">
@@ -237,6 +251,7 @@ export default function ChatWorkbench(props: ScopeProps) {
               <h4>Trace Throughput</h4>
               <p className="meta">events in memory: {traces.length}</p>
               <p className="meta">trace id: {chat?.trace_id || "-"}</p>
+              <p className="meta">reingest reason: {autoReingestReason}</p>
             </section>
           </div>
         </section>

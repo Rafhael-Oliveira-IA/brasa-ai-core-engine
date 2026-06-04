@@ -25,3 +25,20 @@ def test_alibaba_provider_model_cost_estimation_uses_model_pricing() -> None:
 
     assert cost > 0
     assert round(cost, 6) == 0.0024
+
+
+def test_alibaba_provider_system_prompt_enforces_grounded_answers() -> None:
+    adapter = AlibabaAdapter(api_key="key", base_url="https://example.com/v1")
+
+    prompt = adapter._system_prompt(prompt="como funciona catch rate?")
+
+    assert "Ground every factual claim" in prompt
+    assert "Do not invent formulas" in prompt
+
+
+def test_alibaba_provider_system_prompt_respects_strict_json_requests() -> None:
+    adapter = AlibabaAdapter(api_key="key", base_url="https://example.com/v1")
+
+    prompt = adapter._system_prompt(prompt="Return ONLY valid JSON with this schema")
+
+    assert "formatting constraints exactly" in prompt

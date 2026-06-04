@@ -22,9 +22,13 @@ class CognitiveQueryEngine:
         self.memory_repository = memory_repository
 
     async def run(self, envelope: RequestEnvelope) -> tuple[ChatResponse, RetrievalResult]:
-        context_packet, retrieval = self.context_builder.build(envelope)
+        retrieval_metadata = dict(envelope.metadata)
+        retrieval_metadata.setdefault("task_type", "chat")
+        retrieval_envelope = envelope.model_copy(update={"metadata": retrieval_metadata})
 
-        routing_metadata = dict(envelope.metadata)
+        context_packet, retrieval = self.context_builder.build(retrieval_envelope)
+
+        routing_metadata = dict(retrieval_envelope.metadata)
         routing_metadata["retrieval"] = retrieval.assembled
         routing_metadata["require_alibaba_final_response"] = True
         routing_metadata.setdefault("task_type", "chat")

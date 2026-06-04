@@ -136,6 +136,9 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         knowledge_compiler=knowledge_compiler,
         project_artifacts_root=settings.data_dir.parent / ".brasa",
         embedding_client=embedding_client,
+        auto_reingest_on_weak_context=settings.chat_auto_reingest_on_weak_context,
+        auto_reingest_min_selected_context=settings.chat_auto_reingest_min_selected_context,
+        auto_reingest_cooldown_seconds=settings.chat_auto_reingest_cooldown_seconds,
     )
 
     local_provider = LocalAdapter(model_name=settings.local_model_name)

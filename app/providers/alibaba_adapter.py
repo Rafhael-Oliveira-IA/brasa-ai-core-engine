@@ -18,6 +18,7 @@ MODEL_TOKEN_PRICING_USD_PER_1K: dict[str, tuple[float, float]] = {
 }
 
 RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+MAX_CONTEXT_SNIPPETS = 8
 
 
 class AlibabaAdapter(BaseProvider):
@@ -54,7 +55,7 @@ class AlibabaAdapter(BaseProvider):
             raise ProviderUnavailable("Alibaba API key is not configured.")
 
         context_block = "\n\n".join(
-            f"[{snippet.source}]\n{snippet.content}" for snippet in context.snippets[:5]
+            f"[{snippet.source}]\n{snippet.content}" for snippet in context.snippets[:MAX_CONTEXT_SNIPPETS]
         )
         user_input = prompt if not context_block else f"Context:\n{context_block}\n\nRequest:\n{prompt}"
 
@@ -64,10 +65,7 @@ class AlibabaAdapter(BaseProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a pragmatic engineering assistant. "
-                        "Prefer concrete steps and call out assumptions."
-                    ),
+                    "content": self._system_prompt(prompt=prompt),
                 },
                 {
                     "role": "user",
@@ -214,6 +212,31 @@ class AlibabaAdapter(BaseProvider):
     def _parse_region_urls(self, raw_value: str) -> list[str]:
         parts = [item.strip() for item in (raw_value or "").split(",")]
         return [item for item in parts if item]
+
+    def _system_prompt(self, *, prompt: str) -> str:
+        if self._requires_strict_format(prompt):
+            return (
+                "You are a precise engineering assistant. "
+                "Follow user formatting constraints exactly and output only what was requested."
+            )
+
+        return (
+            "You are a pragmatic engineering assistant. "
+            "Ground every factual claim in the provided context and call out assumptions explicitly. "
+            "Do not invent formulas, constants, percentages, or file details when evidence is missing. "
+            "If evidence is insufficient, say what is unknown and propose where to verify in the project."
+        )
+
+    def _requires_strict_format(self, prompt: str) -> bool:
+        lowered = (prompt or "").strip().lower()
+        markers = (
+            "return only valid json",
+            "json schema",
+            "only valid json",
+            "output only json",
+            "no markdown",
+        )
+        return any(marker in lowered for marker in markers)
 
     def _chunk_text(self, value: str, *, max_chars: int) -> list[str]:
         text = value.strip()

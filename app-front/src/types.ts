@@ -22,6 +22,19 @@ export interface RetrievalAssembled {
   dependencies?: string[];
   architecture_notes?: string[];
   risks?: string[];
+  auto_reingest?: {
+    triggered?: boolean;
+    reason?: string;
+    is_chat?: boolean;
+    context_reasons?: string[];
+    sync?: {
+      status?: string;
+      scanned_files?: number;
+      changed_nodes?: number;
+      stale_nodes?: number;
+      notes?: string[];
+    };
+  };
   compression?: {
     selected_count: number;
     dropped_count: number;

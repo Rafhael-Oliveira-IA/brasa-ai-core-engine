@@ -28,6 +28,26 @@ class StubProvider(BaseProvider):
         )
 
 
+class RecordingProvider(BaseProvider):
+    def __init__(self, name: str, confidence: float) -> None:
+        self.name = name
+        self.confidence = confidence
+        self.prompts: list[str] = []
+
+    async def generate(self, *, prompt: str, context: ContextPacket, model_name: str) -> ProviderResponse:
+        self.prompts.append(prompt)
+        return ProviderResponse(
+            answer=f"response from {self.name}",
+            confidence=self.confidence,
+            provider=self.name,
+            model_name=model_name,
+            prompt_tokens=10,
+            completion_tokens=20,
+            total_tokens=30,
+            cost_usd=0.0,
+        )
+
+
 class FailingProvider(BaseProvider):
     def __init__(self, name: str) -> None:
         self.name = name
@@ -122,6 +142,74 @@ def test_router_chat_policy_forces_alibaba_even_when_local_would_suffice() -> No
 
         assert decision.provider == "alibaba"
         assert decision.selected_tier != ModelTier.LOCAL
+
+
+def test_router_chat_uses_local_draft_but_keeps_alibaba_as_final_response() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = build_settings(Path(temp_dir))
+        local_provider = RecordingProvider(name="local", confidence=0.99)
+        alibaba_provider = RecordingProvider(name="alibaba", confidence=0.85)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="explica o impacto da refatoracao no inventario",
+            metadata={
+                "task_type": "chat",
+                "retrieval": {
+                    "user_intent": "refactor",
+                    "relevant_systems": ["Inventory", "EventBus"],
+                    "dependencies": ["ItemDatabase", "EventBus"],
+                    "risks": ["state divergence"],
+                },
+            },
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert len(local_provider.prompts) == 1
+        assert len(alibaba_provider.prompts) >= 1
+        assert "Local retrieval summary:" in alibaba_provider.prompts[0]
+        assert "Local draft (optional, may be incomplete):" in alibaba_provider.prompts[0]
+        assert "Output contract (mandatory):" in alibaba_provider.prompts[0]
+        assert "Do not invent formulas" in alibaba_provider.prompts[0]
+
+
+def test_router_non_chat_alibaba_requirement_skips_chat_local_draft() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = build_settings(Path(temp_dir))
+        local_provider = RecordingProvider(name="local", confidence=0.99)
+        alibaba_provider = RecordingProvider(name="alibaba", confidence=0.90)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="action planning with strict json output",
+            metadata={
+                "task_type": "action_planning",
+                "require_alibaba_final_response": True,
+            },
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert len(local_provider.prompts) == 0
+        assert len(alibaba_provider.prompts) == 1
+        assert "Local draft (optional, may be incomplete):" not in alibaba_provider.prompts[0]
 
 
 def test_router_chat_policy_does_not_fallback_to_local_when_alibaba_is_unavailable() -> None:

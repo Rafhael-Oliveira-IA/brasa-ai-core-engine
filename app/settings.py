@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     request_budget_usd: float = 0.20
     chat_force_alibaba_response: bool = True
     chat_force_alibaba_ignore_budget: bool = True
+    chat_local_assist_enabled: bool = True
+    chat_local_assist_max_chars: int = 1400
+    chat_auto_reingest_on_weak_context: bool = True
+    chat_auto_reingest_min_selected_context: int = 2
+    chat_auto_reingest_cooldown_seconds: int = 120
 
     enable_reflection_scheduler: bool = False
     reflection_interval_minutes: int = 1440

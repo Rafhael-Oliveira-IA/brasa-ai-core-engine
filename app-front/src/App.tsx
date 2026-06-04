@@ -21,7 +21,7 @@ export default function App() {
     }
 
     return {
-      title: "Action + Orchestrator Runtime",
+      title: "Action + Auto-Agent Runtime",
       description:
         "Plan, validate, execute, rollback and inspect autonomous loop iterations with explicit guardrails.",
     };
@@ -62,7 +62,7 @@ export default function App() {
             className={`view-btn ${view === "orchestrator" ? "active" : ""}`}
             onClick={() => setView("orchestrator")}
           >
-            Action + Orchestrator
+            Action + Auto-Agent
           </button>
         </div>
       </header>

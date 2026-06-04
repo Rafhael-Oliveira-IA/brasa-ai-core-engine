@@ -5,7 +5,7 @@
 Cognitive Runtime Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
 
-Reflection & Cognitive Calibration Update
+Reflection & Cognitive Calibration & Agent System + Better UI Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
 
 <img width="519" height="894" alt="image" src="https://github.com/user-attachments/assets/70b6f4af-32e3-4ad6-9ddf-e1c09467cc55" />
@@ -418,6 +418,29 @@ POST /v1/chat
 ```
 
 Executes cognitive reasoning pipeline.
+
+Grounded chat policy:
+
+* final answer is forced through Alibaba for chat responses
+* local context and local draft are still used to improve precision
+* model is instructed to separate confirmed evidence vs hypotheses/gaps
+* model is instructed to avoid inventing formulas/numeric constants when evidence is missing
+
+Auto-reingest on weak chat context:
+
+* when chat context is weak or stale-like, runtime can trigger `knowledge_compiler.sync()` automatically
+* retrieval response includes `auto_reingest` diagnostics (trigger reason + sync status)
+* this keeps chat and auto-agent workflows aligned with latest project cognition artifacts
+
+Key runtime knobs (Settings / .env):
+
+* `chat_local_assist_enabled`
+* `chat_local_assist_max_chars`
+* `chat_auto_reingest_on_weak_context`
+* `chat_auto_reingest_min_selected_context`
+* `chat_auto_reingest_cooldown_seconds`
+* `chat_force_alibaba_response`
+* `chat_force_alibaba_ignore_budget`
 
 ---
 

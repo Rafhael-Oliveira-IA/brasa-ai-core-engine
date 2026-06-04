@@ -106,4 +106,5 @@ def test_query_engine_runs_full_cognitive_flow() -> None:
         assert telemetry.retrieval_logged == 1
         assert telemetry.route_logged == 1
         assert router.last_envelope is not None
+        assert router.last_envelope.metadata.get("task_type") == "chat"
         assert router.last_envelope.metadata.get("require_alibaba_final_response") is True
