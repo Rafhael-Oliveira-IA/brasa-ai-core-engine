@@ -95,6 +95,7 @@ class ActionPatchOperation(BaseModel):
     find: str = Field(min_length=1)
     replace: str = ""
     replace_all: bool = False
+    use_regex: bool = False
 
 
 class ActionStep(BaseModel):

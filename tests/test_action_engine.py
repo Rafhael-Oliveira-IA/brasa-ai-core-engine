@@ -48,6 +48,30 @@ class StubContextBuilder:
         return packet, retrieval
 
 
+class StubBallRateContextBuilder:
+    def build(self, envelope):
+        packet = ContextPacket(provenance=["artifact:file:data/lib/newfunctions.lua"])
+        retrieval = RetrievalResult(
+            query=envelope.prompt,
+            entries=[],
+            took_ms=5,
+            assembled={
+                "user_intent": "generation",
+                "relevant_systems": ["Pokemon"],
+                "dependencies": ["getBallsRate"],
+                "risks": [],
+                "context_packet": [
+                    {
+                        "source": "artifact:file:data/lib/newfunctions.lua",
+                        "type": "artifact",
+                        "score": 0.93,
+                    }
+                ],
+            },
+        )
+        return packet, retrieval
+
+
 def test_action_planner_builds_actions_from_retrieval_context() -> None:
     with TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -77,6 +101,43 @@ def test_action_planner_builds_actions_from_retrieval_context() -> None:
         assert retrieval.assembled["user_intent"] == "generation"
         assert len(plan.actions) >= 1
         assert plan.actions[0].target == "Inventory/InventoryManager.cs"
+
+
+def test_action_planner_infers_ball_rate_patch_without_explicit_filename() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        (root / "data" / "lib").mkdir(parents=True, exist_ok=True)
+        (root / "data" / "lib" / "newfunctions.lua").write_text(
+            "local config = { ballRate = 25 }\n",
+            encoding="utf-8",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = CognitiveActionEngine(
+            context_builder=StubBallRateContextBuilder(),
+            memory_repository=repository,
+            workspace_root=root,
+            backup_root=root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+        )
+
+        plan, _ = engine.plan(
+            ActionPlanRequest(
+                project_id="MMO",
+                user_id="u1",
+                prompt="aumente o rate das balls para 40 sem alterar outros parametros",
+            )
+        )
+
+        assert len(plan.actions) == 1
+        action = plan.actions[0]
+        assert action.target == "data/lib/newfunctions.lua"
+        assert action.type == ActionType.PATCH_FILE
+        assert action.patches
+        assert action.patches[0].use_regex is True
+        assert "40" in action.patches[0].replace
 
 
 def test_action_executor_updates_file_and_rollback_restores_original_content() -> None:

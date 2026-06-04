@@ -1,8 +1,16 @@
 import {
+  ActionExecuteRequest,
+  ActionExecutionReport,
+  ActionPlan,
+  ActionPlanRequest,
+  ActionRollbackReport,
+  ActionRollbackRequest,
   ChatResponse,
   ContextAssembleResponse,
   CognitiveFeedbackCreateRequest,
   DiagnosticsResponse,
+  OrchestratorRunReport,
+  OrchestratorRunRequest,
   RequestEnvelope,
 } from "./types";
 
@@ -64,4 +72,32 @@ export async function runDiagnostics(
 
 export async function recentTraces(limit = 20): Promise<{ items: unknown[] }> {
   return requestJson<{ items: unknown[] }>(`/v1/traces/recent?limit=${limit}`);
+}
+
+export async function planActions(payload: ActionPlanRequest): Promise<ActionPlan> {
+  return requestJson<ActionPlan>("/v1/actions/plan", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function executeActions(payload: ActionExecuteRequest): Promise<ActionExecutionReport> {
+  return requestJson<ActionExecutionReport>("/v1/actions/execute", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rollbackActions(payload: ActionRollbackRequest): Promise<ActionRollbackReport> {
+  return requestJson<ActionRollbackReport>("/v1/actions/rollback", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runOrchestrator(payload: OrchestratorRunRequest): Promise<OrchestratorRunReport> {
+  return requestJson<OrchestratorRunReport>("/v1/orchestrator/run", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

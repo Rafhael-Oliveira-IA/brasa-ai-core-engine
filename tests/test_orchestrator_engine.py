@@ -55,7 +55,18 @@ class StubContextBuilder:
 
 
 class StubIngestionPipeline:
+    def __init__(self, output_projects_root: Path | None = None) -> None:
+        self.output_projects_root = output_projects_root or Path(".")
+        self.calls: list[dict[str, object]] = []
+
     def run(self, *, project_path: Path, force: bool, workspace_id: str):
+        self.calls.append(
+            {
+                "project_path": project_path,
+                "force": force,
+                "workspace_id": workspace_id,
+            }
+        )
         return {
             "project_path": project_path.as_posix(),
             "force": force,
@@ -288,3 +299,78 @@ def test_orchestrator_requires_approval_for_abstract_update_actions() -> None:
         assert report.final_state == OrchestratorDecisionState.REQUIRES_APPROVAL
         assert action_engine.execute_calls == 0
         assert "explicit diff/content" in report.iterations[0].decision.reason.lower()
+
+
+def test_orchestrator_resolves_project_path_from_artifacts_without_manual_input() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        repository = MemoryRepository(root / "memory.db")
+
+        source_project = root / "source" / "MMO"
+        source_project.mkdir(parents=True, exist_ok=True)
+
+        files_index = (
+            root
+            / "workspaces"
+            / "mmo_workspace"
+            / "MMO"
+            / "raw"
+            / "files_index.json"
+        )
+        files_index.parent.mkdir(parents=True, exist_ok=True)
+        files_index.write_text(
+            '{"project_path": "' + source_project.as_posix() + '"}',
+            encoding="utf-8",
+        )
+
+        plan = ActionPlan(
+            plan_id="plan-auto-path",
+            workspace_id="mmo_workspace",
+            project_id="mmo_workspace::MMO",
+            user_id="u1",
+            prompt="create docs",
+            actions=[
+                ActionStep(
+                    type=ActionType.CREATE_FILE,
+                    target="docs/path.md",
+                    intent="add file",
+                    risk=ActionRisk.LOW,
+                    content="# path\n",
+                )
+            ],
+        )
+        execution = ActionExecutionReport(
+            plan_id="plan-auto-path",
+            dry_run=False,
+            applied=1,
+            skipped=0,
+            failed=0,
+            changed_files=["docs/path.md"],
+        )
+
+        ingestion = StubIngestionPipeline(output_projects_root=root)
+        action_engine = StubActionEngine(plan=plan, execution=execution)
+        orchestrator = CognitiveOrchestrator(
+            action_engine=action_engine,
+            context_builder=StubContextBuilder(),
+            ingestion_pipeline=ingestion,
+            knowledge_compiler=StubKnowledgeCompiler(),
+            evaluation_engine=StubEvaluationEngine(),
+            reflection=StubReflection(),
+            memory_repository=repository,
+        )
+
+        request = OrchestratorRunRequest(
+            workspace_id="mmo_workspace",
+            project_id="MMO",
+            user_id="u1",
+            intent="create docs",
+            mode=OrchestratorMode.AUTOPILOT,
+            max_iterations=1,
+        )
+
+        report = orchestrator.run(request)
+
+        assert report.final_state == OrchestratorDecisionState.AUTO_EXECUTE
+        assert len(ingestion.calls) == 1
+        assert ingestion.calls[0]["project_path"] == source_project

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from app.ingestion.pipeline import ProjectIngestionPipeline
 from app.knowledge.compiler import KnowledgeCompiler
 from app.memory.repository import MemoryRepository
 from app.reflection.nightly_reflection import ReflectionService
+from app.workspace import split_scoped_project_id
 
 
 RISK_LEVEL = {
@@ -271,16 +273,22 @@ class CognitiveOrchestrator:
     def _post_action_ingestion(self, *, request: OrchestratorRunRequest, notes: list[str]) -> dict[str, Any]:
         payload: dict[str, Any] = {}
 
-        if request.project_path:
+        source_project_path = self._resolve_project_path(request=request)
+        if source_project_path is not None:
             try:
                 ingestion_report = self.ingestion_pipeline.run(
-                    project_path=Path(request.project_path),
+                    project_path=source_project_path,
                     workspace_id=request.workspace_id,
                     force=False,
                 )
-                payload["ingestion"] = self._to_payload(ingestion_report)
+                payload["ingestion"] = {
+                    **self._to_payload(ingestion_report),
+                    "resolved_project_path": source_project_path.as_posix(),
+                }
             except Exception as exc:
                 notes.append(f"ingestion_failed: {exc}")
+        else:
+            notes.append("ingestion_skipped: project_path unresolved; using knowledge sync only")
 
         try:
             knowledge_sync = self.knowledge_compiler.sync(force=False)
@@ -294,6 +302,38 @@ class CognitiveOrchestrator:
             notes.append(f"knowledge_sync_failed: {exc}")
 
         return payload
+
+    def _resolve_project_path(self, *, request: OrchestratorRunRequest) -> Path | None:
+        explicit = (request.project_path or "").strip()
+        if explicit:
+            return Path(explicit)
+
+        workspace_id, plain_project_id = split_scoped_project_id(
+            request.project_id,
+            fallback_workspace_id=request.workspace_id,
+        )
+
+        files_index = (
+            self.ingestion_pipeline.output_projects_root
+            / "workspaces"
+            / workspace_id
+            / plain_project_id
+            / "raw"
+            / "files_index.json"
+        )
+        if not files_index.exists():
+            return None
+
+        try:
+            payload = json.loads(files_index.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        project_path = str(payload.get("project_path") or "").strip()
+        if not project_path:
+            return None
+
+        return Path(project_path)
 
     def _refresh_context(self, *, request: OrchestratorRunRequest, iteration: int) -> dict[str, Any]:
         envelope = RequestEnvelope(

@@ -89,7 +89,7 @@ class ActionPlanner:
             seen.add(normalized)
             ordered_targets.append(normalized)
 
-        targets = ordered_targets[: request.max_actions]
+        targets = self._prioritize_targets_for_prompt(ordered_targets, prompt)[: request.max_actions]
         warnings: list[str] = []
 
         if not targets:
@@ -105,6 +105,7 @@ class ActionPlanner:
                 risk=risk,
                 rationale="heuristic planner based on explicit targets + hot retrieval context",
             )
+            self._attach_prompt_specific_mutations(action=action, prompt=prompt)
             actions.append(action)
 
         summary = (
@@ -189,6 +190,95 @@ class ActionPlanner:
         while text.startswith("./"):
             text = text[2:]
         return text.strip("/")
+
+    def _prioritize_targets_for_prompt(self, targets: list[str], prompt: str) -> list[str]:
+        if not self._is_ball_rate_prompt(prompt):
+            return targets
+
+        ranked = sorted(
+            ((self._ball_rate_target_priority(target), target) for target in targets),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        if ranked and ranked[0][0] > 0:
+            return [ranked[0][1]]
+
+        preferred = [target for target in targets if self._is_likely_ball_rate_target(target)]
+        if preferred:
+            return [preferred[0]]
+        return targets
+
+    def _attach_prompt_specific_mutations(self, *, action: ActionStep, prompt: str) -> None:
+        if action.type in {ActionType.CREATE_FILE, ActionType.DELETE_FILE}:
+            return
+
+        rate_value = self._extract_rate_value(prompt)
+        if rate_value is None:
+            return
+
+        if not self._is_ball_rate_prompt(prompt):
+            return
+
+        if not self._is_likely_ball_rate_target(action.target):
+            return
+
+        action.type = ActionType.PATCH_FILE
+        action.patches = [
+            ActionPatchOperation(
+                find=r"(?im)(\b(?:balls?_?rate|rate_?balls?)\b\s*=\s*)(\d+(?:\.\d+)?)",
+                replace=rf"\g<1>{rate_value}",
+                use_regex=True,
+            )
+        ]
+        action.rationale = (
+            f"{action.rationale}; inferred balls-rate parameter patch from intent"
+        )
+
+    def _extract_rate_value(self, prompt: str) -> str | None:
+        lower = prompt.lower()
+
+        explicit = re.search(
+            r"(?:rate|taxa|parametro|par[âa]metro)\D{0,20}(?:para|to|=)\s*(\d+(?:\.\d+)?)",
+            lower,
+            flags=re.IGNORECASE,
+        )
+        if explicit:
+            return explicit.group(1)
+
+        generic_to = re.search(r"(?:para|to|=)\s*(\d+(?:\.\d+)?)", lower, flags=re.IGNORECASE)
+        if generic_to:
+            return generic_to.group(1)
+
+        numbers = re.findall(r"\d+(?:\.\d+)?", lower)
+        if numbers:
+            return numbers[-1]
+        return None
+
+    def _is_ball_rate_prompt(self, prompt: str) -> bool:
+        lower = prompt.lower()
+        has_ball = any(term in lower for term in {"ball", "balls", "pokeball", "pokeballs"})
+        has_rate = any(term in lower for term in {"rate", "taxa"})
+        return has_ball and has_rate
+
+    def _is_likely_ball_rate_target(self, target: str) -> bool:
+        lower = target.replace("\\", "/").lower()
+        if not lower.endswith((".lua", ".py", ".json", ".yml", ".yaml", ".toml", ".ini")):
+            return False
+        if "newfunction" in lower:
+            return True
+        if "ball" in lower:
+            return True
+        return False
+
+    def _ball_rate_target_priority(self, target: str) -> int:
+        lower = target.replace("\\", "/").lower()
+        if not lower.endswith((".lua", ".py", ".json", ".yml", ".yaml", ".toml", ".ini")):
+            return 0
+        if "newfunction" in lower:
+            return 3
+        if "ball" in lower:
+            return 2
+        return 0
 
 
 class ActionValidator:
@@ -651,6 +741,13 @@ class ActionExecutor:
 
         updated = original
         for patch in patches:
+            if patch.use_regex:
+                count = 0 if patch.replace_all else 1
+                updated, changed = re.subn(patch.find, patch.replace, updated, count=count)
+                if changed <= 0:
+                    raise ValueError("Patch regex did not match file contents.")
+                continue
+
             if patch.find not in updated:
                 raise ValueError("Patch find text not found in file.")
             if patch.replace_all:

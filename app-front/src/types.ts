@@ -90,3 +90,171 @@ export interface DiagnosticsResponse {
   recommendations: string[];
   report_file?: string;
 }
+
+export type ActionType = "create_file" | "update_file" | "patch_file" | "delete_file";
+export type ActionRisk = "low" | "medium" | "high" | "critical";
+export type ValidationSeverity = "warning" | "error";
+export type ActionStepStatus = "planned" | "applied" | "skipped" | "failed" | "rolled_back";
+
+export interface ActionPatchOperation {
+  find: string;
+  replace: string;
+  replace_all: boolean;
+}
+
+export interface ActionStep {
+  step_id?: string;
+  type: ActionType;
+  target: string;
+  intent: string;
+  risk?: ActionRisk;
+  rationale?: string;
+  patches?: ActionPatchOperation[];
+  content?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ActionPlanRequest {
+  plan_id?: string;
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  prompt: string;
+  metadata?: Record<string, unknown>;
+  max_actions?: number;
+}
+
+export interface ActionPlan {
+  plan_id: string;
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  prompt: string;
+  summary: string;
+  actions: ActionStep[];
+  warnings: string[];
+  retrieval: Record<string, unknown>;
+  generated_at: string;
+}
+
+export interface ActionValidationIssue {
+  step_id: string;
+  severity: ValidationSeverity;
+  code: string;
+  message: string;
+}
+
+export interface ActionValidationReport {
+  ok: boolean;
+  issues: ActionValidationIssue[];
+  blocked_steps: string[];
+}
+
+export interface ActionExecutionOptions {
+  dry_run: boolean;
+  allow_high_risk: boolean;
+  auto_rollback_on_error: boolean;
+  run_feedback_loop: boolean;
+}
+
+export interface ActionExecuteRequest {
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  plan: ActionPlan;
+  options: ActionExecutionOptions;
+}
+
+export interface ActionStepResult {
+  step_id: string;
+  target: string;
+  status: ActionStepStatus;
+  message: string;
+  backup_path?: string | null;
+  bytes_written: number;
+}
+
+export interface ActionExecutionReport {
+  execution_id: string;
+  plan_id: string;
+  dry_run: boolean;
+  applied: number;
+  skipped: number;
+  failed: number;
+  changed_files: string[];
+  validation: ActionValidationReport;
+  results: ActionStepResult[];
+  feedback_notes: string[];
+  rollback_performed: boolean;
+  rollback_restored_files: number;
+  created_at: string;
+}
+
+export interface ActionRollbackRequest {
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  execution_id: string;
+}
+
+export interface ActionRollbackReport {
+  execution_id: string;
+  restored_files: number;
+  removed_files: number;
+  skipped_files: number;
+  notes: string[];
+}
+
+export type OrchestratorMode = "manual" | "autopilot";
+export type OrchestratorDecisionState = "auto_execute" | "requires_approval" | "blocked";
+
+export interface OrchestratorDecision {
+  state: OrchestratorDecisionState;
+  highest_risk: ActionRisk;
+  execute_now: boolean;
+  reason: string;
+}
+
+export interface OrchestratorRunRequest {
+  run_id?: string;
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  intent: string;
+  mode: OrchestratorMode;
+  max_iterations: number;
+  project_path?: string;
+  dry_run: boolean;
+  auto_execute_low_risk: boolean;
+  auto_execute_medium_risk: boolean;
+  allow_high_risk: boolean;
+  block_critical_risk: boolean;
+  evaluation_limit?: number;
+  run_reflection: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface OrchestratorIterationReport {
+  iteration: number;
+  plan: ActionPlan;
+  decision: OrchestratorDecision;
+  execution?: ActionExecutionReport | null;
+  ingestion: Record<string, unknown>;
+  context_refresh: Record<string, unknown>;
+  evaluation: Record<string, unknown>;
+  reflection: Record<string, unknown>;
+  notes: string[];
+}
+
+export interface OrchestratorRunReport {
+  run_id: string;
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  mode: OrchestratorMode;
+  final_state: OrchestratorDecisionState;
+  iterations: OrchestratorIterationReport[];
+  notes: string[];
+  created_at: string;
+  finished_at: string;
+}

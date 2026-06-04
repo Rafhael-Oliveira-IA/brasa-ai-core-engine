@@ -22,6 +22,25 @@ body {
   margin-bottom: 16px;
 }
 
+.view-switch {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.view-btn {
+  background: #d8e7db;
+  color: #184931;
+  border: 1px solid #b8d2be;
+  font-weight: 600;
+}
+
+.view-btn.active {
+  background: #1f6f4a;
+  border-color: #1f6f4a;
+  color: #ffffff;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 0.9fr 1.1fr;
@@ -105,6 +124,36 @@ button:disabled {
   color: #b42828;
 }
 
+.status {
+  color: #1f6f4a;
+  font-weight: 600;
+}
+
+.muted {
+  color: #435669;
+  font-size: 13px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.toggle-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.toggle-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
 .answer,
 .code {
   background: #0f172a;
@@ -148,6 +197,10 @@ button:disabled {
 
 @media (max-width: 980px) {
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toggle-grid {
     grid-template-columns: 1fr;
   }
 }
