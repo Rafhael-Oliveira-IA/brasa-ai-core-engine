@@ -17,6 +17,10 @@ Use these PRs as historical anchors when starting a new AI chat or reviewing arc
 - [Cognitive Distributed Runtime (PR #4)](https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/4)
   - distributed cognition direction and runtime specialization strategy
   - stronger separation between local deterministic layers and cloud reasoning layers
+- [Phase 5.5 — Cognitive Workspace Foundation (PR #5)](https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/5)
+  - session-based Cognitive Studio conversation workflow (IDE-like explorer + editor + chat thread)
+  - workspace/project-scoped artifact explorer and file reading endpoints
+  - manual and one-click ingestion flow for project contextualization per workspace
 
 <img width="519" height="894" alt="image" src="https://github.com/user-attachments/assets/70b6f4af-32e3-4ad6-9ddf-e1c09467cc55" />
 <img width="697" height="699" alt="image" src="https://github.com/user-attachments/assets/db4fffb2-134d-4b20-90b7-38e860b80de5" />
@@ -439,6 +443,16 @@ Key variables:
 - `GET /health`
 - `POST /v1/context/assemble`
 - `GET /v1/traces/recent`
+- `GET /v1/workspace/file`
+
+### Cognitive Studio Conversation
+
+- `POST /v1/conversations/sessions`
+- `GET /v1/conversations/sessions`
+- `GET /v1/conversations/{session_id}/messages`
+- `POST /v1/conversations/{session_id}/send`
+- `GET /v1/project/artifacts/tree`
+- `GET /v1/project/artifacts/file`
 
 ### Chat and Tasks
 
@@ -525,7 +539,7 @@ Key variables:
 
 The frontend provides two operational views:
 
-- **Chat Runtime**: context packet, grounded routing, diagnostics, traces, feedback
+- **Cognitive Studio Conversation**: IDE-like workspace explorer + project files + session-specific chat thread + command-driven runtime operations
 - **Action + Auto-Agent Runtime**: plan/execution/rollback/orchestrator loops with guardrails
 
 ## Testing and Validation
@@ -567,6 +581,8 @@ This script performs:
 - Action execution enforces blocked paths and validation before writing files.
 - Use rollback endpoint after risky operations or test runs.
 - If project artifacts are stale, run `POST /v1/knowledge/sync` before heavy reasoning sessions.
+- For project-scoped context quality (MMO XML/Lua rules, runtime repo, etc.), run `POST /v1/ingestion/run` with the real `project_path` for the selected workspace.
+- Cognitive Studio can then use project-scoped artifact endpoints (`/v1/project/artifacts/tree`, `/v1/project/artifacts/file`) to keep Explorer/Editor aligned with the selected workspace/project.
 
 ## AI Handoff (Quick Start For Next Chat)
 
@@ -595,6 +611,13 @@ Expected for this prompt:
 
 - `artifact:file:data/monster/kanto/arcanine.lua` should appear near top context sources.
 - snippet content should include a `LootEvidence[...]` block with concrete `pokemon.loot` rows.
+
+For workspace/project-scoped runs, ensure the project is ingested first:
+
+```powershell
+$ingest = @{workspace_id='mmo_workspace'; project_path='F:/POKECONTEST/SERVIDOR - ORIGINAL'; force=$false} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/ingestion/run" -ContentType "application/json" -Body $ingest
+```
 
 ### 3) Current chat stack behavior (important)
 

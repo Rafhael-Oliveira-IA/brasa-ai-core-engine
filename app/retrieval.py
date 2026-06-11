@@ -30,6 +30,10 @@ NOISE_PATH_SEGMENTS = (
     "/metadata/files/vcpkg_installed/",
     "/metadata/files/build/",
     "/metadata/files/cmake/",
+    "/data/knowledge/",
+    "/data/evaluations/",
+    "/data/reflection_reports/",
+    "/app-front/dist/",
 )
 
 MMO_XML_DIRS = (
@@ -505,6 +509,15 @@ class ContextRetrievalEngine:
             )
         )
 
+        artifacts_root = resolve_project_root(
+            artifacts_base_root=self.project_artifacts_root,
+            project_id=plain_project_id,
+            workspace_id=workspace_id,
+        )
+        artifacts_metadata_root = artifacts_root / "metadata" / "files"
+        artifacts_ingested = artifacts_metadata_root.exists()
+        source_project_root = self._resolve_source_project_root(artifacts_root)
+
         artifact_candidates, direct_dependencies, recent_changes = self._artifact_candidates(
             project_id=plain_project_id,
             workspace_id=workspace_id,
@@ -512,6 +525,32 @@ class ContextRetrievalEngine:
             prompt=envelope.prompt,
         )
         candidates.extend(artifact_candidates)
+
+        workspace_scoped_run = workspace_id != "brasa_ai_workspace"
+        if workspace_scoped_run and not artifact_candidates:
+            # In workspace-scoped runs without ingested project artifacts,
+            # stale episodic chat memories can dominate with unrelated context.
+            candidates = [
+                item
+                for item in candidates
+                if not item.source.startswith("memory:episodic:")
+            ]
+
+            candidates.append(
+                RetrievalCandidate(
+                    source="diagnostic:project_artifacts_missing",
+                    content=(
+                        "No ingested artifacts were found for the selected workspace/project. "
+                        "Run /v1/ingestion/run with the real MMO project_path to enable XML/Lua/domain retrieval."
+                    ),
+                    relevance_score=1.0,
+                    freshness_score=1.0,
+                    confidence_score=1.0,
+                    importance_score=1.0,
+                    dependencies=[],
+                    candidate_type="diagnostic",
+                )
+            )
 
         cloud_assist = self._cloud_retrieval_assist(
             prompt=envelope.prompt,
@@ -601,6 +640,15 @@ class ContextRetrievalEngine:
             )
 
         risks = self._build_risk_analysis(selected=selected, dropped=dropped, prompt=envelope.prompt)
+        if workspace_scoped_run and not artifact_candidates:
+            risks.append(
+                "project_artifacts_missing: selected workspace/project has no indexed artifacts for retrieval."
+            )
+            if source_project_root is None:
+                risks.append(
+                    "project_source_path_missing: run ingestion with project_path to bind workspace/project to MMO source tree."
+                )
+
         compression_payload = {
             "selected_count": len(selected),
             "dropped_count": len(dropped),
@@ -624,6 +672,14 @@ class ContextRetrievalEngine:
             "compression": compression_payload,
             "semantic_retrieval": semantic_info,
             "cloud_retrieval_assist": cloud_assist,
+            "project_context": {
+                "workspace_id": workspace_id,
+                "project_id": plain_project_id,
+                "artifacts_root": artifacts_root.as_posix(),
+                "artifacts_ingested": artifacts_ingested,
+                "artifact_candidates": len(artifact_candidates),
+                "source_project_path": source_project_root.as_posix() if source_project_root else None,
+            },
             # Backward compatible aliases for existing callers/tests.
             "contexts": context_packet,
             "memories": [entry.id for entry in memories],

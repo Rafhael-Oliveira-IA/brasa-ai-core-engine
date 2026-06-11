@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,11 +43,15 @@ from app.contracts import (
     MemorySearchResponse,
     OrchestratorRunReport,
     OrchestratorRunRequest,
+    ProjectArtifactFileContentResponse,
+    ProjectArtifactsTreeResponse,
     ReflectionReport,
     RequestEnvelope,
     TaskRequest,
     TaskResponse,
     TaskType,
+    ProjectArtifactFileContentResponse,
+    ProjectArtifactsTreeResponse,
     WatcherCheckReport,
     WatcherCheckRequest,
     WorkspaceFileContentResponse,
@@ -71,7 +76,7 @@ from app.settings import Settings, get_settings
 from app.task_engine import CognitiveTaskEngine
 from app.telemetry.tracing import TraceLogger
 from app.watcher import FileSystemWatcherEngine
-from app.workspace import normalize_workspace_id, scoped_project_id
+from app.workspace import normalize_workspace_id, resolve_project_root, scoped_project_id, split_scoped_project_id
 
 
 @dataclass
@@ -466,7 +471,7 @@ def resolve_workspace_file_path(*, workspace_root: Path, relative_path: str) -> 
     return resolved_target
 
 
-async def run_chat_task(runtime: RuntimeContainer, payload: RequestEnvelope) -> TaskResponse:
+async def run_chat_task(runtime: RuntimeContainer, payload: RequestEnvelope) -> tuple[TaskResponse, dict[str, Any]]:
     if hasattr(runtime, "task_engine"):
         task_request = TaskRequest(
             task_id=payload.request_id,
@@ -478,21 +483,24 @@ async def run_chat_task(runtime: RuntimeContainer, payload: RequestEnvelope) -> 
             tier_hint=payload.tier_hint,
             metadata=payload.metadata,
         )
-        task_response, _ = await runtime.task_engine.run(task_request)
-        return task_response
+        task_response, retrieval = await runtime.task_engine.run(task_request)
+        return task_response, _payload_of(retrieval)
 
     if hasattr(runtime, "query_engine"):
-        chat_response, _ = await runtime.query_engine.run(payload)
-        return TaskResponse(
-            task_id=payload.request_id,
-            task_type=TaskType.CHAT,
-            answer=chat_response.answer,
-            confidence=chat_response.confidence,
-            route=chat_response.route,
-            context_sources=chat_response.context_sources,
-            trace_id=chat_response.trace_id,
-            pipeline=[],
-            retrieval={},
+        chat_response, retrieval = await runtime.query_engine.run(payload)
+        return (
+            TaskResponse(
+                task_id=payload.request_id,
+                task_type=TaskType.CHAT,
+                answer=chat_response.answer,
+                confidence=chat_response.confidence,
+                route=chat_response.route,
+                context_sources=chat_response.context_sources,
+                trace_id=chat_response.trace_id,
+                pipeline=[],
+                retrieval={},
+            ),
+            _payload_of(retrieval),
         )
 
     raise HTTPException(status_code=503, detail="No chat execution engine is available in this runtime.")
@@ -509,6 +517,115 @@ def _payload_of(value: Any) -> Any:
     if isinstance(value, list):
         return [_payload_of(item) for item in value]
     return value
+
+
+def normalize_path_for_artifacts(path: str) -> str:
+    text = str(path or "").replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    return text.strip("/")
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def resolve_project_artifacts_context(
+    *,
+    runtime: RuntimeContainer,
+    workspace_id: str,
+    project_id: str,
+) -> tuple[str, str, str, Path]:
+    normalized_workspace, plain_project = split_scoped_project_id(
+        project_id,
+        fallback_workspace_id=workspace_id,
+    )
+    scoped_project = scoped_project_id(project_id=plain_project, workspace_id=normalized_workspace)
+
+    artifacts_root = resolve_project_root(
+        artifacts_base_root=runtime.context_builder.project_artifacts_root,
+        project_id=plain_project,
+        workspace_id=normalized_workspace,
+    )
+    return normalized_workspace, plain_project, scoped_project, artifacts_root
+
+
+def resolve_project_source_root(artifacts_root: Path) -> Path | None:
+    files_index = artifacts_root / "raw" / "files_index.json"
+    payload = _load_json_file(files_index)
+    raw_project_path = str(payload.get("project_path") or "").strip()
+    if not raw_project_path:
+        return None
+
+    source_root = Path(raw_project_path).resolve()
+    if not source_root.exists() or not source_root.is_dir():
+        return None
+
+    return source_root
+
+
+def _read_text_with_fallback(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _trim_content(content: str, max_chars: int) -> tuple[str, bool]:
+    truncated = len(content) > max_chars
+    if truncated:
+        return content[:max_chars], True
+    return content, False
+
+
+def _resolve_artifact_metadata_path(*, artifacts_root: Path, relative_path: str) -> Path:
+    normalized = normalize_path_for_artifacts(relative_path)
+    rel = Path(normalized)
+    return artifacts_root / "metadata" / "files" / rel.parent / f"{rel.stem}.meta.json"
+
+
+def _is_browsable_project_artifact_path(path: str) -> bool:
+    normalized = normalize_path_for_artifacts(path).lower()
+    if not normalized:
+        return False
+
+    blocked_prefixes = (
+        ".brasa/",
+        "data/knowledge/",
+        "data/evaluations/",
+        "data/reflection_reports/",
+        "app-front/dist/",
+    )
+    if any(normalized.startswith(prefix) for prefix in blocked_prefixes):
+        return False
+
+    if normalized in {"data/traces.jsonl", "data/memory.db"}:
+        return False
+
+    scoped = f"/{normalized}/"
+    blocked_segments = (
+        "/.git/",
+        "/build/",
+        "/cmake/",
+        "/vc17/",
+        "/vcpkg_installed/",
+        "/node_modules/",
+        "/metadata/files/",
+    )
+    if any(segment in scoped for segment in blocked_segments):
+        return False
+
+    return True
 
 
 def _bool_option(raw: Any, *, default: bool) -> bool:
@@ -572,7 +689,7 @@ async def run_conversation_command(
                 "conversation_message_id": user_message.message_id,
             },
         )
-        task_response = await run_chat_task(runtime, envelope)
+        task_response, retrieval_payload = await run_chat_task(runtime, envelope)
         return {
             "operation": command,
             "answer": task_response.answer,
@@ -580,6 +697,7 @@ async def run_conversation_command(
             "operation_result": {
                 "task_id": task_response.task_id,
                 "task_type": task_response.task_type.value,
+                "retrieval": retrieval_payload,
             },
             "request_id": task_response.task_id,
             "trace_id": task_response.trace_id,
@@ -1120,6 +1238,139 @@ def read_workspace_file(
     )
 
 
+@app.get("/v1/project/artifacts/tree", response_model=ProjectArtifactsTreeResponse)
+def project_artifacts_tree(
+    request: Request,
+    workspace_id: str = Query(default="brasa_ai_workspace"),
+    project_id: str = Query(...),
+    limit: int = Query(default=5000, ge=1, le=50000),
+) -> ProjectArtifactsTreeResponse:
+    runtime = runtime_from(request)
+    normalized_workspace, plain_project, scoped_project, artifacts_root = resolve_project_artifacts_context(
+        runtime=runtime,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+    metadata_root = artifacts_root / "metadata" / "files"
+    ingested = metadata_root.exists()
+    files: list[str] = []
+    notes: list[str] = []
+
+    if ingested:
+        for meta_path in metadata_root.rglob("*.meta.json"):
+            payload = _load_json_file(meta_path)
+            relative_path = normalize_path_for_artifacts(str(payload.get("path") or ""))
+            if not relative_path:
+                continue
+            if not _is_browsable_project_artifact_path(relative_path):
+                continue
+            files.append(relative_path)
+            if len(files) >= limit:
+                notes.append(f"File list truncated to limit={limit}.")
+                break
+    else:
+        notes.append("Project artifacts not ingested for selected workspace/project.")
+
+    source_root = resolve_project_source_root(artifacts_root)
+    if source_root is None:
+        notes.append("Source project path is unavailable; run ingestion with project_path.")
+
+    dedup_files = sorted(set(files))
+
+    return ProjectArtifactsTreeResponse(
+        workspace_id=normalized_workspace,
+        project_id=plain_project,
+        scoped_project_id=scoped_project,
+        artifacts_root=artifacts_root.as_posix(),
+        ingested=ingested,
+        source_project_path=source_root.as_posix() if source_root else None,
+        file_count=len(dedup_files),
+        files=dedup_files,
+        notes=notes,
+    )
+
+
+@app.get("/v1/project/artifacts/file", response_model=ProjectArtifactFileContentResponse)
+def project_artifact_file(
+    request: Request,
+    workspace_id: str = Query(default="brasa_ai_workspace"),
+    project_id: str = Query(...),
+    path: str = Query(..., min_length=1),
+    max_chars: int = Query(default=50000, ge=200, le=200000),
+) -> ProjectArtifactFileContentResponse:
+    runtime = runtime_from(request)
+    normalized_workspace, plain_project, scoped_project, artifacts_root = resolve_project_artifacts_context(
+        runtime=runtime,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+    normalized_relative = normalize_path_for_artifacts(path)
+    if not normalized_relative:
+        raise HTTPException(status_code=400, detail="File path is required.")
+
+    source_root = resolve_project_source_root(artifacts_root)
+    if source_root is not None:
+        try:
+            source_file = resolve_workspace_file_path(
+                workspace_root=source_root,
+                relative_path=normalized_relative,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if source_file.exists() and source_file.is_file():
+            content = _read_text_with_fallback(source_file)
+            trimmed, truncated = _trim_content(content, max_chars)
+            return ProjectArtifactFileContentResponse(
+                workspace_id=normalized_workspace,
+                project_id=plain_project,
+                scoped_project_id=scoped_project,
+                path=normalized_relative,
+                exists=True,
+                content=trimmed,
+                truncated=truncated,
+                size_bytes=source_file.stat().st_size,
+                encoding="utf-8",
+                source="project_source",
+            )
+
+    metadata_path = _resolve_artifact_metadata_path(
+        artifacts_root=artifacts_root,
+        relative_path=normalized_relative,
+    )
+    metadata_payload = _load_json_file(metadata_path)
+    summary_path_value = str(metadata_payload.get("summary_path") or "").strip()
+
+    if summary_path_value:
+        summary_path = Path(summary_path_value)
+    else:
+        rel = Path(normalized_relative)
+        summary_path = artifacts_root / "summaries" / "files" / rel.parent / f"{rel.stem}.summary.md"
+
+    if summary_path.exists() and summary_path.is_file():
+        content = _read_text_with_fallback(summary_path)
+        trimmed, truncated = _trim_content(content, max_chars)
+        return ProjectArtifactFileContentResponse(
+            workspace_id=normalized_workspace,
+            project_id=plain_project,
+            scoped_project_id=scoped_project,
+            path=normalized_relative,
+            exists=True,
+            content=trimmed,
+            truncated=truncated,
+            size_bytes=summary_path.stat().st_size,
+            encoding="utf-8",
+            source="artifact_summary",
+        )
+
+    raise HTTPException(
+        status_code=404,
+        detail="Project artifact file not found. Run ingestion for this workspace/project.",
+    )
+
+
 @app.post("/v1/memory", response_model=MemoryEntry)
 def create_memory(payload: MemoryCreateRequest, request: Request) -> MemoryEntry:
     runtime = runtime_from(request)
@@ -1369,7 +1620,7 @@ async def chat(payload: RequestEnvelope, request: Request) -> ChatResponse:
     payload = scope_envelope(payload)
 
     try:
-        task_response = await run_chat_task(runtime, payload)
+        task_response, _ = await run_chat_task(runtime, payload)
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover

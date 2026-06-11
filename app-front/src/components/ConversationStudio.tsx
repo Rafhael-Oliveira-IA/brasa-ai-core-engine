@@ -2,18 +2,19 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createConversationSession,
-  getKnowledgeTree,
-  getWorkspaceFile,
+  getProjectArtifactFile,
+  getProjectArtifactsTree,
   listConversationMessages,
   listConversationSessions,
+  runProjectIngestion,
   sendConversationMessage,
 } from "../api";
 import {
   ConversationMessage,
   ConversationSendResponse,
   ConversationSession,
-  KnowledgeTreeResponse,
-  WorkspaceFileContentResponse,
+  ProjectArtifactFileContentResponse,
+  ProjectArtifactsTreeResponse,
 } from "../types";
 
 type ScopeProps = {
@@ -174,13 +175,6 @@ function extractPathsFromMessages(messages: ConversationMessage[]): string[] {
   return paths;
 }
 
-function extractPathsFromKnowledge(knowledge: KnowledgeTreeResponse | null): string[] {
-  if (!knowledge) return [];
-  return knowledge.nodes
-    .map((node) => normalizePath(node.source_path || ""))
-    .filter((item) => item.length > 0);
-}
-
 type RawExplorerNode = {
   name: string;
   path: string;
@@ -331,9 +325,9 @@ export default function ConversationStudio(props: ScopeProps) {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [activeMessageId, setActiveMessageId] = useState<string>("");
 
-  const [knowledgeTree, setKnowledgeTree] = useState<KnowledgeTreeResponse | null>(null);
+  const [artifactsTree, setArtifactsTree] = useState<ProjectArtifactsTreeResponse | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState<string>("");
-  const [fileContent, setFileContent] = useState<WorkspaceFileContentResponse | null>(null);
+  const [fileContent, setFileContent] = useState<ProjectArtifactFileContentResponse | null>(null);
   const [fileContentError, setFileContentError] = useState("");
 
   const [prompt, setPrompt] = useState("");
@@ -344,13 +338,17 @@ export default function ConversationStudio(props: ScopeProps) {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingKnowledge, setLoadingKnowledge] = useState(false);
   const [loadingFileContent, setLoadingFileContent] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
   const [sending, setSending] = useState(false);
 
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [lastOperation, setLastOperation] = useState<ConversationSendResponse | null>(null);
+  const [projectPathInput, setProjectPathInput] = useState("");
+  const [autoIngestEnabled, setAutoIngestEnabled] = useState(true);
 
   const threadEndRef = useRef<HTMLDivElement | null>(null);
+  const lastAutoIngestKeyRef = useRef("");
 
   const commandDef = useMemo(() => {
     return COMMANDS.find((item) => item.id === command) || COMMANDS[0];
@@ -363,11 +361,11 @@ export default function ConversationStudio(props: ScopeProps) {
   }, [messages, activeMessageId]);
 
   const explorerTree = useMemo(() => {
-    const fromKnowledge = extractPathsFromKnowledge(knowledgeTree);
+    const fromArtifacts = (artifactsTree?.files || []).map((item) => normalizePath(item));
     const fromMessages = extractPathsFromMessages(messages);
-    const unique = Array.from(new Set([...fromKnowledge, ...fromMessages]));
+    const unique = Array.from(new Set([...fromArtifacts, ...fromMessages]));
     return buildExplorerTree(unique);
-  }, [knowledgeTree, messages]);
+  }, [artifactsTree, messages]);
 
   const selectedSnippet = useMemo(() => {
     if (!selectedFilePath) return "";
@@ -439,10 +437,38 @@ export default function ConversationStudio(props: ScopeProps) {
   }, [messages, selectedFilePath]);
 
   useEffect(() => {
+    const storageKey = `brasa.projectPath.${props.workspaceId}::${props.projectId}`;
+    const stored = typeof window !== "undefined" ? window.localStorage.getItem(storageKey) : null;
+    setProjectPathInput(stored || "");
+    lastAutoIngestKeyRef.current = "";
+  }, [props.workspaceId, props.projectId]);
+
+  useEffect(() => {
+    if (!artifactsTree?.source_project_path) return;
+    if (projectPathInput.trim()) return;
+    setProjectPathInput(artifactsTree.source_project_path);
+  }, [artifactsTree?.source_project_path, projectPathInput]);
+
+  useEffect(() => {
     void refreshSessions();
-    void refreshKnowledge();
+    void refreshProjectArtifacts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.workspaceId, props.projectId, props.userId]);
+
+  useEffect(() => {
+    if (!autoIngestEnabled) return;
+    if (!projectPathInput.trim()) return;
+    if (!artifactsTree) return;
+    if (artifactsTree.ingested) return;
+    if (ingesting) return;
+
+    const key = `${props.workspaceId}::${props.projectId}::${projectPathInput.trim()}`;
+    if (lastAutoIngestKeyRef.current === key) return;
+
+    lastAutoIngestKeyRef.current = key;
+    void runIngestion("auto");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoIngestEnabled, projectPathInput, artifactsTree, ingesting, props.workspaceId, props.projectId]);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -491,7 +517,12 @@ export default function ConversationStudio(props: ScopeProps) {
       setFileContentError("");
 
       try {
-        const response = await getWorkspaceFile(selectedFilePath, 50000);
+        const response = await getProjectArtifactFile(
+          props.workspaceId,
+          props.projectId,
+          selectedFilePath,
+          50000,
+        );
         if (cancelled) return;
         setFileContent(response);
       } catch (err) {
@@ -510,7 +541,7 @@ export default function ConversationStudio(props: ScopeProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedFilePath]);
+  }, [selectedFilePath, props.workspaceId, props.projectId]);
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -551,12 +582,16 @@ export default function ConversationStudio(props: ScopeProps) {
     }
   }
 
-  async function refreshKnowledge() {
+  async function refreshProjectArtifacts() {
     setLoadingKnowledge(true);
 
     try {
-      const response = await getKnowledgeTree();
-      setKnowledgeTree(response);
+      const response = await getProjectArtifactsTree(
+        props.workspaceId,
+        props.projectId,
+        12000,
+      );
+      setArtifactsTree(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -614,6 +649,39 @@ export default function ConversationStudio(props: ScopeProps) {
     }
   }
 
+  async function runIngestion(origin: "manual" | "auto") {
+    const path = projectPathInput.trim();
+    if (!path) {
+      setError("Defina o project_path para ingestao.");
+      return;
+    }
+
+    setIngesting(true);
+    setError("");
+
+    try {
+      const report = await runProjectIngestion({
+        workspace_id: props.workspaceId,
+        project_path: path,
+        force: false,
+      });
+
+      const storageKey = `brasa.projectPath.${props.workspaceId}::${props.projectId}`;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(storageKey, path);
+      }
+
+      setStatus(
+        `${origin === "auto" ? "Auto" : "Manual"} ingest ok: scanned=${report.scanned_files}, changed=${report.changed_files}.`,
+      );
+      await refreshProjectArtifacts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIngesting(false);
+    }
+  }
+
   async function onSend(event?: FormEvent) {
     event?.preventDefault();
     if (!prompt.trim()) return;
@@ -654,7 +722,7 @@ export default function ConversationStudio(props: ScopeProps) {
       setPrompt("");
       setStatus(`Operacao '${response.operation}' concluida.`);
       await refreshSessions(session.session_id);
-      await refreshKnowledge();
+      await refreshProjectArtifacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -735,19 +803,60 @@ export default function ConversationStudio(props: ScopeProps) {
         <div className="explorer-block">
           <div className="explorer-block-head">
             <h4>Project Files</h4>
-            <button
-              type="button"
-              className="ghost-btn"
-              onClick={() => void refreshKnowledge()}
-              disabled={loadingKnowledge}
-            >
-              {loadingKnowledge ? "Sync..." : "Sync"}
-            </button>
+            <div className="studio-sidebar-actions">
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => void refreshProjectArtifacts()}
+                disabled={loadingKnowledge || ingesting}
+              >
+                {loadingKnowledge ? "Sync..." : "Sync"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void runIngestion("manual")}
+                disabled={ingesting || !projectPathInput.trim()}
+              >
+                {ingesting ? "Ingest..." : "One-click Ingest"}
+              </button>
+            </div>
           </div>
 
-          <p className="muted">
-            nodes: {knowledgeTree?.nodes.length || 0} | stale: {knowledgeTree?.stale_nodes || 0}
-          </p>
+          <label className="ide-field">
+            <span>project_path</span>
+            <input
+              value={projectPathInput}
+              onChange={(event) => setProjectPathInput(event.target.value)}
+              placeholder="F:/POKECONTEST/SERVIDOR - ORIGINAL"
+            />
+          </label>
+
+          <label className="toggle-item">
+            <input
+              type="checkbox"
+              checked={autoIngestEnabled}
+              onChange={(event) => setAutoIngestEnabled(event.target.checked)}
+            />
+            auto-ingest ao trocar workspace/project (com project_path salvo)
+          </label>
+
+          <p className="muted">files: {artifactsTree?.file_count || 0}</p>
+          {artifactsTree?.ingested === false ? (
+            <p className="error">
+              Projeto ainda nao ingerido para este workspace/project. Rode o comando
+              ingestion_run com options.project_path do seu MMO.
+            </p>
+          ) : null}
+          {artifactsTree?.source_project_path ? (
+            <p className="meta">source: {artifactsTree.source_project_path}</p>
+          ) : null}
+          {artifactsTree?.notes?.length ? (
+            <ul className="list tight-list">
+              {artifactsTree.notes.map((item, index) => (
+                <li key={`${item}-${index}`}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
 
           <div className="explorer-tree-wrap">
             {!explorerTree.length ? <p className="muted">Sem arquivos no explorer ainda.</p> : null}

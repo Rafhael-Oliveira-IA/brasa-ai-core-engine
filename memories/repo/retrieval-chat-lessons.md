@@ -7,6 +7,8 @@
 - For generic summaries, enrich context with raw source excerpts (e.g., LootEvidence block) so the final answer can cite concrete values.
 - Chat can use a Qwen multi-model pipeline (classification -> generation -> verifier -> repair) with safe fallbacks when classifier/verifier payloads are unavailable.
 - Route decision tier/cost should reflect the effective model family (flash/plus/max) inferred from model_name, especially when role-specific model overrides tier defaults.
+- Workspace/project scoped chats require ingested artifacts under `.brasa/workspaces/<workspace>/<project>`; when missing, retrieval should emit explicit diagnostics and avoid over-prioritizing stale episodic chat memories.
+- Use project-scoped artifact endpoints (`/v1/project/artifacts/tree`, `/v1/project/artifacts/file`) in IDE-style explorer/editor views so file context matches the selected workspace/project instead of runtime repository internals.
 
 ## New Chat Checklist
 

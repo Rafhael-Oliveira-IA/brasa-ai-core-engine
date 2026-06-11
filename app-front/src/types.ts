@@ -198,6 +198,47 @@ export interface WorkspaceFileContentResponse {
   encoding: string;
 }
 
+export interface ProjectArtifactsTreeResponse {
+  workspace_id: string;
+  project_id: string;
+  scoped_project_id: string;
+  artifacts_root: string;
+  ingested: boolean;
+  source_project_path?: string | null;
+  file_count: number;
+  files: string[];
+  notes: string[];
+}
+
+export interface ProjectArtifactFileContentResponse {
+  workspace_id: string;
+  project_id: string;
+  scoped_project_id: string;
+  path: string;
+  exists: boolean;
+  content: string;
+  truncated: boolean;
+  size_bytes: number;
+  encoding: string;
+  source: string;
+}
+
+export interface ProjectIngestionReport {
+  workspace_id?: string | null;
+  project_name: string;
+  project_path: string;
+  output_path: string;
+  scanned_files: number;
+  changed_files: number;
+  removed_files: number;
+  generated_file_summaries: number;
+  generated_folder_summaries: number;
+  generated_project_summary: boolean;
+  project_type: string;
+  engine: string;
+  notes: string[];
+}
+
 export type FeedbackVerdict = "correct" | "partial" | "incorrect";
 
 export type FeedbackIssue =

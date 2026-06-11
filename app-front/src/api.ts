@@ -18,6 +18,9 @@ import {
   KnowledgeTreeResponse,
   OrchestratorRunReport,
   OrchestratorRunRequest,
+  ProjectArtifactFileContentResponse,
+  ProjectArtifactsTreeResponse,
+  ProjectIngestionReport,
   RequestEnvelope,
   WorkspaceFileContentResponse,
 } from "./types";
@@ -126,6 +129,53 @@ export async function getWorkspaceFile(
     max_chars: String(maxChars),
   });
   return requestJson<WorkspaceFileContentResponse>(`/v1/workspace/file?${params.toString()}`);
+}
+
+export async function getProjectArtifactsTree(
+  workspaceId: string,
+  projectId: string,
+  limit = 5000,
+): Promise<ProjectArtifactsTreeResponse> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    limit: String(limit),
+  });
+  return requestJson<ProjectArtifactsTreeResponse>(
+    `/v1/project/artifacts/tree?${params.toString()}`,
+  );
+}
+
+export async function getProjectArtifactFile(
+  workspaceId: string,
+  projectId: string,
+  path: string,
+  maxChars = 50000,
+): Promise<ProjectArtifactFileContentResponse> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    path,
+    max_chars: String(maxChars),
+  });
+  return requestJson<ProjectArtifactFileContentResponse>(
+    `/v1/project/artifacts/file?${params.toString()}`,
+  );
+}
+
+export async function runProjectIngestion(payload: {
+  workspace_id: string;
+  project_path: string;
+  force?: boolean;
+}): Promise<ProjectIngestionReport> {
+  return requestJson<ProjectIngestionReport>("/v1/ingestion/run", {
+    method: "POST",
+    body: JSON.stringify({
+      workspace_id: payload.workspace_id,
+      project_path: payload.project_path,
+      force: payload.force ?? false,
+    }),
+  });
 }
 
 export async function sendFeedback(payload: CognitiveFeedbackCreateRequest): Promise<void> {

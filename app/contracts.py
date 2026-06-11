@@ -480,6 +480,31 @@ class WorkspaceFileContentResponse(BaseModel):
     encoding: str = "utf-8"
 
 
+class ProjectArtifactsTreeResponse(BaseModel):
+    workspace_id: str
+    project_id: str
+    scoped_project_id: str
+    artifacts_root: str
+    ingested: bool = False
+    source_project_path: str | None = None
+    file_count: int = 0
+    files: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ProjectArtifactFileContentResponse(BaseModel):
+    workspace_id: str
+    project_id: str
+    scoped_project_id: str
+    path: str
+    exists: bool = True
+    content: str = ""
+    truncated: bool = False
+    size_bytes: int = 0
+    encoding: str = "utf-8"
+    source: str = "project_source"
+
+
 class EvaluationRunRequest(BaseModel):
     limit: int = Field(default=300, ge=20, le=5000)
     workspace_id: str | None = None
