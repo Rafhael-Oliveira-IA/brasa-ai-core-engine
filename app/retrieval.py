@@ -245,6 +245,118 @@ ITEM_LOOT_TERMS = {
     "item drop",
 }
 
+INTENT_STOPWORDS = {
+    "a",
+    "as",
+    "o",
+    "os",
+    "um",
+    "uma",
+    "de",
+    "da",
+    "das",
+    "do",
+    "dos",
+    "no",
+    "nos",
+    "na",
+    "nas",
+    "em",
+    "e",
+    "ou",
+    "com",
+    "sem",
+    "para",
+    "por",
+    "que",
+    "qual",
+    "quais",
+    "como",
+    "onde",
+    "why",
+    "what",
+    "where",
+    "when",
+    "which",
+    "who",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+}
+
+INTENT_SHORT_TOKEN_ALLOWLIST = {
+    "id",
+    "uid",
+    "aid",
+    "xml",
+    "lua",
+    "sql",
+    "api",
+    "sdk",
+    "rpc",
+    "otp",
+    "hp",
+    "xp",
+    "ui",
+    "ux",
+}
+
+LOOT_QUERY_STOPWORDS = {
+    "o",
+    "os",
+    "a",
+    "as",
+    "um",
+    "uma",
+    "de",
+    "do",
+    "da",
+    "dos",
+    "das",
+    "no",
+    "na",
+    "nos",
+    "nas",
+    "em",
+    "e",
+    "ou",
+    "que",
+    "qual",
+    "quais",
+    "onde",
+    "fica",
+    "ficam",
+    "esta",
+    "estao",
+    "loot",
+    "loots",
+    "drop",
+    "drops",
+    "dropar",
+    "dropa",
+    "stone",
+    "stones",
+    "heart",
+    "fire",
+    "pedra",
+    "pedras",
+    "item",
+    "items",
+    "itens",
+}
+
 DEPENDENCY_NOISE_PREFIXES = (
     "symbol:",
     "app.",
@@ -292,6 +404,15 @@ DEPENDENCY_FILE_PREFIXES = (
     "packages/",
     "tools/",
 )
+
+NEGATIVE_EVIDENCE_PHRASES = {
+    "nao ha evidencia",
+    "não há evidência",
+    "no evidence",
+    "not found",
+    "nao foi encontrado",
+    "não foi encontrado",
+}
 
 
 @dataclass
@@ -374,7 +495,7 @@ class ContextRetrievalEngine:
         )
 
         candidates: list[RetrievalCandidate] = []
-        candidates.extend(self._memory_candidates(memories, intent_terms))
+        candidates.extend(self._memory_candidates(memories, intent_terms, prompt=envelope.prompt))
         candidates.extend(
             self._knowledge_candidates(
                 envelope.prompt,
@@ -519,14 +640,32 @@ class ContextRetrievalEngine:
 
         return packet, retrieval
 
-    def _memory_candidates(self, memories: list, terms: set[str]) -> list[RetrievalCandidate]:
+    def _memory_candidates(self, memories: list, terms: set[str], *, prompt: str) -> list[RetrievalCandidate]:
         candidates: list[RetrievalCandidate] = []
+        prompt_lower = (prompt or "").lower()
+        code_evidence_focus = self._is_code_evidence_prompt(prompt_lower)
+        item_loot_focus = self._is_item_loot_focused_prompt(prompt_lower)
+
         for memory in memories:
             content = memory.content.strip()
             relevance = self._text_relevance(content, terms)
             freshness = self._freshness_score(memory.updated_at)
             confidence = max(0.0, min(1.0, float(memory.confidence)))
             importance = 0.65 if memory.scope.value == "project" else 0.55
+
+            content_lower = content.lower()
+            is_auto_chat_memory = content_lower.startswith("tasktype: chat")
+            has_negative_evidence_language = any(
+                phrase in content_lower for phrase in NEGATIVE_EVIDENCE_PHRASES
+            )
+
+            if is_auto_chat_memory and (code_evidence_focus or item_loot_focus):
+                relevance = min(relevance, 0.45)
+                confidence = min(confidence, 0.70)
+                importance = min(importance, 0.45)
+
+            if has_negative_evidence_language and (code_evidence_focus or item_loot_focus):
+                relevance = max(0.05, relevance * 0.50)
 
             candidates.append(
                 RetrievalCandidate(
@@ -542,6 +681,31 @@ class ContextRetrievalEngine:
             )
 
         return candidates
+
+    def _is_code_evidence_prompt(self, prompt: str | None) -> bool:
+        lower = (prompt or "").lower()
+        if not lower:
+            return False
+
+        return any(
+            term in lower
+            for term in {
+                ".lua",
+                ".xml",
+                ".py",
+                ".json",
+                "arquivo",
+                "arquivos",
+                "file",
+                "files",
+                "script",
+                "scripts",
+                "loot",
+                "drop",
+                "monster",
+                "monstro",
+            }
+        )
 
     def _cloud_retrieval_assist(
         self,
@@ -906,6 +1070,9 @@ class ContextRetrievalEngine:
 
         prompt_lower = (prompt or "").strip().lower()
         active_profile = self.profile_registry.aggregate(workspace_id=workspace_id, prompt=prompt_lower)
+        item_loot_focus = self._is_item_loot_focused_prompt(prompt_lower)
+        loot_entity_terms = self._loot_entity_terms(prompt_lower) if item_loot_focus else set()
+        source_project_root = self._resolve_source_project_root(project_root) if item_loot_focus else None
 
         candidates: list[RetrievalCandidate] = []
         fallback_candidates: list[RetrievalCandidate] = []
@@ -932,6 +1099,20 @@ class ContextRetrievalEngine:
             content = self._safe_read(summary_path)
             if not content:
                 content = f"# {Path(file_path).stem}\n"
+
+            if (
+                item_loot_focus
+                and source_project_root is not None
+                and self._is_monster_loot_source_path(file_path)
+            ):
+                normalized_file_path = file_path.replace("\\", "/").lower()
+                if not loot_entity_terms or any(term in normalized_file_path for term in loot_entity_terms):
+                    raw_excerpt = self._extract_loot_evidence_excerpt(
+                        source_project_root=source_project_root,
+                        relative_path=file_path,
+                    )
+                    if raw_excerpt:
+                        content = f"{content}\n\n{raw_excerpt}"
 
             symbols = [str(item) for item in metadata.get("symbols", [])]
             direct_deps = [str(item) for item in metadata.get("dependencies", [])]
@@ -984,6 +1165,75 @@ class ContextRetrievalEngine:
             recent_changes.extend(item.source.removeprefix("artifact:file:") for item in selected_fallback if item.is_hot)
 
         return candidates, expanded_dependencies, sorted(set(recent_changes))
+
+    def _resolve_source_project_root(self, project_root: Path) -> Path | None:
+        files_index = project_root / "raw" / "files_index.json"
+        payload = self._load_json(files_index)
+        raw_project_path = str(payload.get("project_path") or "").strip()
+        if not raw_project_path:
+            return None
+
+        source_root = Path(raw_project_path).resolve()
+        if not source_root.exists() or not source_root.is_dir():
+            return None
+
+        return source_root
+
+    def _is_monster_loot_source_path(self, file_path: str) -> bool:
+        normalized = "/" + str(file_path).replace("\\", "/").strip("/").lower() + "/"
+        if "/data/monster/" not in normalized and "/data/monsters/" not in normalized:
+            return False
+        return normalized.endswith(".lua/") or normalized.endswith(".xml/")
+
+    def _extract_loot_evidence_excerpt(self, *, source_project_root: Path, relative_path: str) -> str:
+        relative = str(relative_path).replace("\\", "/").strip("/")
+        if not relative:
+            return ""
+
+        source_file = (source_project_root / relative).resolve()
+        try:
+            source_file.relative_to(source_project_root)
+        except ValueError:
+            return ""
+
+        text = self._safe_read(source_file)
+        if not text:
+            return ""
+
+        lines = text.splitlines()
+        if not lines:
+            return ""
+
+        start = None
+        loot_markers = (
+            "loot =",
+            "loot=",
+            "pokemon.loot",
+            "drop =",
+            "drops =",
+            "<loot",
+            "heart stone",
+            "fire stone",
+        )
+
+        for index, line in enumerate(lines):
+            lowered = line.lower()
+            if any(marker in lowered for marker in loot_markers):
+                start = index
+                break
+
+        if start is None:
+            return ""
+
+        excerpt_lines = lines[start : min(len(lines), start + 32)]
+        excerpt = "\n".join(excerpt_lines).strip()
+        if not excerpt:
+            return ""
+
+        if len(excerpt) > 1200:
+            excerpt = excerpt[:1200].rstrip() + "\n..."
+
+        return f"LootEvidence[{relative}]:\n{excerpt}"
 
     def _is_noise_path(self, value: str, *, include_app_internal: bool) -> bool:
         normalized = "/" + str(value).replace("\\", "/").strip("/").lower() + "/"
@@ -1106,8 +1356,8 @@ class ContextRetrievalEngine:
             elif "/data/items/" in normalized and extension == ".xml":
                 bonus += 0.28
 
-            if ("/data/monster/" in normalized or "/data/monsters/" in normalized) and extension == ".xml":
-                bonus += 0.18
+            if ("/data/monster/" in normalized or "/data/monsters/" in normalized) and extension in {".xml", ".lua"}:
+                bonus += 0.24
 
             if "/loot/" in normalized:
                 bonus += 0.16
@@ -1297,8 +1547,17 @@ class ContextRetrievalEngine:
         item_loot_focus = self._is_item_loot_focused_prompt(prompt)
         has_item_loot = any(self._is_item_loot_artifact_candidate(item) for item in selected)
         has_items_xml = any(self._is_items_xml_candidate(item) for item in selected)
+        has_monster_loot = any(self._is_monster_loot_candidate(item) for item in selected)
 
         forced_candidates: list[RetrievalCandidate] = []
+        if item_loot_focus and not has_monster_loot:
+            monster_loot_candidate = self._find_monster_loot_candidate(
+                candidates=candidates,
+                prompt=prompt,
+            )
+            if monster_loot_candidate is not None:
+                forced_candidates.append(monster_loot_candidate)
+
         if item_loot_focus and not has_items_xml:
             items_xml_candidate = next((item for item in candidates if self._is_items_xml_candidate(item)), None)
             if items_xml_candidate is not None:
@@ -1414,13 +1673,71 @@ class ContextRetrievalEngine:
         if "/loot/" in source_lower:
             return True
 
-        if ("/data/monster/" in source_lower or "/data/monsters/" in source_lower) and source_lower.endswith(".xml"):
+        if ("/data/monster/" in source_lower or "/data/monsters/" in source_lower) and source_lower.endswith((".xml", ".lua")):
             return True
 
         if "/data/scripts/" in source_lower and ("loot" in source_lower or "drop" in source_lower):
             return True
 
         return False
+
+    def _is_monster_loot_candidate(self, candidate: RetrievalCandidate) -> bool:
+        if not candidate.source.startswith("artifact:file:"):
+            return False
+
+        source_lower = candidate.source.lower().replace("\\", "/")
+        if "/data/monster/" not in source_lower and "/data/monsters/" not in source_lower:
+            return False
+        return source_lower.endswith((".xml", ".lua"))
+
+    def _find_monster_loot_candidate(
+        self,
+        *,
+        candidates: list[RetrievalCandidate],
+        prompt: str | None,
+    ) -> RetrievalCandidate | None:
+        monster_candidates = [item for item in candidates if self._is_monster_loot_candidate(item)]
+        if not monster_candidates:
+            return None
+
+        prompt_terms = self._loot_entity_terms(prompt)
+        if prompt_terms:
+            matched = [
+                item
+                for item in monster_candidates
+                if any(term in item.source.lower() for term in prompt_terms)
+            ]
+            if matched:
+                matched.sort(
+                    key=lambda item: (
+                        item.final_score,
+                        item.relevance_score,
+                        item.importance_score,
+                        item.freshness_score,
+                    ),
+                    reverse=True,
+                )
+                return matched[0]
+
+        monster_candidates.sort(
+            key=lambda item: (
+                item.final_score,
+                item.relevance_score,
+                item.importance_score,
+                item.freshness_score,
+            ),
+            reverse=True,
+        )
+        return monster_candidates[0]
+
+    def _loot_entity_terms(self, prompt: str | None) -> set[str]:
+        lower = (prompt or "").lower()
+        tokens = re.findall(r"[a-z0-9_]+", lower)
+        return {
+            token
+            for token in tokens
+            if len(token) >= 4 and token not in LOOT_QUERY_STOPWORDS
+        }
 
     def _matches_xml_filename_term(self, candidate: RetrievalCandidate, xml_terms: set[str]) -> bool:
         if not xml_terms:
@@ -1482,14 +1799,32 @@ class ContextRetrievalEngine:
         terms: set[str] = set()
 
         for token in re.findall(r"[a-z0-9_]+(?:-[a-z0-9_]+)*", lower):
-            if len(token) >= 2:
-                terms.add(token)
+            normalized = token.strip()
+            if not normalized:
+                continue
+            if normalized in INTENT_STOPWORDS:
+                continue
+            if len(normalized) < 3 and normalized not in INTENT_SHORT_TOKEN_ALLOWLIST:
+                continue
+            terms.add(normalized)
+
+            # Keep a singular variant for simple plurals (e.g. loots -> loot).
+            if normalized.endswith("s") and len(normalized) >= 5:
+                singular = normalized[:-1]
+                if singular and singular not in INTENT_STOPWORDS:
+                    terms.add(singular)
 
         # Preserve compact variants for compatibility with existing matching behavior.
         compact = "".join(ch for ch in lower if ch.isalnum() or ch in {"_", "-", " "})
         for token in compact.split():
-            if len(token) >= 2:
-                terms.add(token)
+            normalized = token.strip()
+            if not normalized:
+                continue
+            if normalized in INTENT_STOPWORDS:
+                continue
+            if len(normalized) < 3 and normalized not in INTENT_SHORT_TOKEN_ALLOWLIST:
+                continue
+            terms.add(normalized)
 
         return terms
 

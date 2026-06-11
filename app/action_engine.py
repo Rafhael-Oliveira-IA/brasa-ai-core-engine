@@ -381,7 +381,7 @@ class ActionPlanner:
             return True
         if "/loot/" in scoped:
             return True
-        if "drop" in lower or "stone" in lower:
+        if "drop" in lower or "stone" in lower or "loot" in lower:
             return True
         if lower.endswith("/items.xml"):
             return True
@@ -396,8 +396,14 @@ class ActionPlanner:
             return 5
         if "/loot/" in scoped:
             return 4
+        if "/data/creaturescripts/scripts/" in scoped and any(
+            token in lower for token in {"drop", "loot", "stone"}
+        ):
+            return 4
         if "drop" in lower and "/data/scripts/" in scoped:
             return 4
+        if "loot" in lower and "/scripts/" in scoped:
+            return 3
         if "stone" in lower and "/data/scripts/" in scoped:
             return 3
         if lower.endswith("/items.xml"):
@@ -451,7 +457,7 @@ class ActionPlanner:
                 "fix",
             }
         )
-        return has_drop and (has_item or has_monster or has_action)
+        return (has_drop and (has_item or has_monster or has_action)) or (has_item and has_monster and has_action)
 
 
 class ActionValidator:
@@ -1154,11 +1160,30 @@ class CognitiveActionEngine:
             workspace_root=planning_workspace_root,
         )
 
-        warnings = list(heuristic_plan.warnings)
         raw_warnings = payload.get("warnings", [])
+        warnings = list(heuristic_plan.warnings)
         if isinstance(raw_warnings, list):
             warnings.extend(str(item) for item in raw_warnings[:8])
         warnings.extend(refinement_notes[:8])
+
+        if not actions:
+            fallback_actions = [
+                action.model_copy(deep=True)
+                for action in heuristic_plan.actions
+                if self._action_has_concrete_mutation(action)
+            ]
+            warnings.append(
+                "model-assisted actions were discarded due to missing/invalid mutations; using heuristic fallback"
+            )
+            if not fallback_actions:
+                warnings.append("heuristic fallback yielded no concrete mutations")
+
+            return heuristic_plan.model_copy(
+                update={
+                    "actions": fallback_actions,
+                    "warnings": warnings,
+                }
+            )
 
         warnings.append(
             f"model-assisted planning applied via {decision.provider}:{decision.model_name}"
@@ -1363,11 +1388,13 @@ class CognitiveActionEngine:
     ) -> tuple[list[ActionStep], list[str]]:
         refined: list[ActionStep] = []
         notes: list[str] = []
+        is_ball_rate_prompt = self.planner._is_ball_rate_prompt(fallback_prompt)
+        is_loot_drop_prompt = self.planner._is_loot_drop_prompt(fallback_prompt)
 
         for action in actions:
             candidate = action.model_copy(deep=True)
 
-            if self.planner._is_ball_rate_prompt(fallback_prompt):
+            if is_ball_rate_prompt:
                 retargeted = self._retarget_ball_rate_action_if_needed(
                     action=candidate,
                     workspace_root=workspace_root,
@@ -1377,12 +1404,39 @@ class CognitiveActionEngine:
                         f"retargeted action target to {candidate.target} based on workspace evidence"
                     )
 
+            if is_loot_drop_prompt:
+                retargeted = self._retarget_loot_drop_action_if_needed(
+                    action=candidate,
+                    workspace_root=workspace_root,
+                )
+                if retargeted:
+                    notes.append(
+                        f"retargeted loot/drop action target to {candidate.target} based on workspace evidence"
+                    )
+
             if candidate.type in {ActionType.UPDATE_FILE, ActionType.PATCH_FILE} and candidate.content is None:
                 if not candidate.patches:
                     self.planner._attach_prompt_specific_mutations(
                         action=candidate,
                         prompt=fallback_prompt,
                     )
+
+                    if not candidate.patches and is_loot_drop_prompt:
+                        original_target = candidate.target
+                        alternate = self._infer_alternate_loot_target(
+                            current_target=original_target,
+                            workspace_root=workspace_root,
+                        )
+                        if alternate is not None and alternate != original_target:
+                            candidate.target = alternate
+                            self.planner._attach_prompt_specific_mutations(
+                                action=candidate,
+                                prompt=fallback_prompt,
+                            )
+                            if candidate.patches:
+                                notes.append(
+                                    f"moved loot/drop target from {original_target} to {candidate.target} to build concrete patch"
+                                )
 
                 if candidate.patches and not self._patches_match_target(
                     action=candidate,
@@ -1403,10 +1457,18 @@ class CognitiveActionEngine:
                             f"repaired patch operations using heuristic mutations for {candidate.target}"
                         )
                     else:
-                        alternate = self._infer_alternate_ball_rate_target(
-                            current_target=original_target,
-                            workspace_root=workspace_root,
-                        )
+                        alternate: str | None = None
+                        if is_ball_rate_prompt:
+                            alternate = self._infer_alternate_ball_rate_target(
+                                current_target=original_target,
+                                workspace_root=workspace_root,
+                            )
+                        elif is_loot_drop_prompt:
+                            alternate = self._infer_alternate_loot_target(
+                                current_target=original_target,
+                                workspace_root=workspace_root,
+                            )
+
                         if alternate is not None:
                             candidate.target = alternate
                             candidate.patches = []
@@ -1421,6 +1483,12 @@ class CognitiveActionEngine:
                                 notes.append(
                                     f"moved patch target from {original_target} to {candidate.target} for patch match"
                                 )
+
+            if not self._action_has_concrete_mutation(candidate):
+                notes.append(
+                    f"discarded model action without concrete mutation for {candidate.target}"
+                )
+                continue
 
             refined.append(candidate)
 
@@ -1440,6 +1508,33 @@ class CognitiveActionEngine:
             workspace_root=workspace_root,
         )
         if alternate is None:
+            return False
+
+        action.target = alternate
+        return True
+
+    def _retarget_loot_drop_action_if_needed(self, *, action: ActionStep, workspace_root: Path) -> bool:
+        normalized_target, target_path = self.validator._resolve_target(
+            workspace_root=workspace_root,
+            target=action.target,
+        )
+
+        if (
+            normalized_target
+            and target_path is not None
+            and target_path.exists()
+            and self.planner._is_likely_loot_target(normalized_target)
+        ):
+            return False
+
+        alternate = self._infer_alternate_loot_target(
+            current_target=normalized_target or action.target,
+            workspace_root=workspace_root,
+        )
+        if alternate is None:
+            return False
+
+        if (normalized_target or "").lower() == alternate.lower():
             return False
 
         action.target = alternate
@@ -1477,6 +1572,66 @@ class CognitiveActionEngine:
             return None
 
         return None
+
+    def _infer_alternate_loot_target(self, *, current_target: str, workspace_root: Path) -> str | None:
+        normalized = current_target.replace("\\", "/").lower()
+        ranked: list[tuple[int, str]] = []
+        seen: set[str] = set()
+
+        def consider(relative_target: str) -> None:
+            normalized_item, target_path = self.validator._resolve_target(
+                workspace_root=workspace_root,
+                target=relative_target,
+            )
+            if not normalized_item or target_path is None:
+                return
+            if not target_path.exists() or not target_path.is_file():
+                return
+
+            score = self.planner._loot_target_priority(normalized_item)
+            if score <= 0:
+                return
+
+            if normalized_item in seen:
+                return
+
+            seen.add(normalized_item)
+            ranked.append((score, normalized_item))
+
+        candidates = [
+            "data/monster/arcanine.lua",
+            "data/monsters/arcanine.lua",
+            "data/creaturescripts/scripts/basestone_drops.lua",
+            "data/creaturescripts/scripts/droploot.lua",
+            "data/items/items.xml",
+        ]
+        for item in candidates:
+            consider(item)
+
+        try:
+            for pattern in ("*arcanine*.lua", "*drop*.lua", "*loot*.lua", "*stone*.lua", "items.xml"):
+                for file_path in workspace_root.rglob(pattern):
+                    if not file_path.is_file():
+                        continue
+                    consider(file_path.relative_to(workspace_root).as_posix())
+        except Exception:
+            pass
+
+        if not ranked:
+            return None
+
+        ranked.sort(key=lambda item: (item[0], -len(item[1])), reverse=True)
+        best = ranked[0][1]
+        if normalized.endswith(Path(best).name.lower()):
+            return None
+        return best
+
+    def _action_has_concrete_mutation(self, action: ActionStep) -> bool:
+        if action.type in {ActionType.CREATE_FILE, ActionType.DELETE_FILE}:
+            return True
+        if action.type in {ActionType.UPDATE_FILE, ActionType.PATCH_FILE}:
+            return action.content is not None or bool(action.patches)
+        return False
 
     def _patches_match_target(self, *, action: ActionStep, workspace_root: Path) -> bool:
         if action.content is not None:

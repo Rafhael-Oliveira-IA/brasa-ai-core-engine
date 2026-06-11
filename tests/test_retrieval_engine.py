@@ -145,3 +145,23 @@ def test_retrieval_keeps_oversized_top_candidate_by_truncating() -> None:
         assert packet.snippets[0].content.endswith("...")
         used_chars = retrieval.assembled["compression"]["used_chars"]
         assert used_chars <= 600
+
+
+def test_intent_terms_filter_stopwords_for_loot_queries() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa" / "projects",
+            knowledge_compiler=StubKnowledgeCompiler(),
+            max_chars=3000,
+        )
+
+        terms = engine._intent_terms("quais os loots do arcanine?")
+
+        assert "os" not in terms
+        assert "do" not in terms
+        assert "arcanine" in terms
+        assert "loots" in terms
+        assert "loot" in terms

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-import ChatWorkbench from "./components/ChatWorkbench";
+import ConversationStudio from "./components/ConversationStudio";
 import OrchestratorWorkbench from "./components/OrchestratorWorkbench";
 
 type AppView = "chat" | "orchestrator";
@@ -14,9 +14,9 @@ export default function App() {
   const viewLabel = useMemo(() => {
     if (view === "chat") {
       return {
-        title: "Cognitive Query Runtime",
+        title: "Cognitive Studio Conversation",
         description:
-          "Context assembly, routing, diagnostics, traces and feedback in one operational panel.",
+          "Session-based copilot workflow with command-driven access to all BRASA core systems.",
       };
     }
 
@@ -68,7 +68,7 @@ export default function App() {
       </header>
 
       {view === "chat" ? (
-        <ChatWorkbench
+        <ConversationStudio
           workspaceId={workspaceId}
           projectId={projectId}
           userId={userId}

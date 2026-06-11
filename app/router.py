@@ -28,6 +28,19 @@ TIER_TOKEN_RATES = {
     ModelTier.MAX: (0.0035, 0.0070),
 }
 
+CHAT_CLASSIFIER_ALLOWED_ROLES = {
+    "default",
+    "coding",
+    "long_context",
+    "planning",
+    "compression",
+}
+
+CHAT_VERIFIER_ALLOWED_VERDICTS = {
+    "ok",
+    "needs_repair",
+}
+
 
 class CostAwarenessEngine:
     def estimate(
@@ -53,6 +66,10 @@ class CognitiveRoutingPolicy:
         if envelope.tier_hint is not None:
             return envelope.tier_hint, "explicit tier hint"
 
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+        task_type = str(metadata.get("task_type", "")).strip().lower()
+        is_chat = task_type == "chat"
+
         retrieval = envelope.metadata.get("retrieval") if isinstance(envelope.metadata, dict) else None
         if isinstance(retrieval, dict):
             intent = str(retrieval.get("user_intent") or "").strip().lower()
@@ -69,6 +86,8 @@ class CognitiveRoutingPolicy:
             if intent == "debug" and risk_count > 0:
                 return ModelTier.PLUS, "debug with contextual risks"
             if context_count >= 14:
+                if is_chat and intent in {"general-query", "testing"}:
+                    return ModelTier.FLASH, "chat cost-aware start on flash for large context"
                 return ModelTier.PLUS, "large context packet"
 
         complexity = self._complexity_score(envelope.prompt)
@@ -130,16 +149,53 @@ class AIRouter:
         context: ContextPacket,
     ) -> tuple[ProviderResponse, RouteDecision]:
         require_alibaba_final = self._requires_alibaba_final_response(envelope)
+        is_chat_task = self._is_chat_task(envelope)
+        chat_multi_model_enabled = (
+            require_alibaba_final
+            and is_chat_task
+            and self.settings.chat_qwen_multi_model_enabled
+        )
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+        explicit_role = str(metadata.get("model_role", "")).strip().lower()
+        has_explicit_role = bool(explicit_role)
+
         model_role = self._resolve_model_role(envelope)
         provider_prompt = envelope.prompt
+        classifier_notes: list[str] = []
+        classifier_tier: ModelTier | None = None
 
-        if require_alibaba_final and self._is_chat_task(envelope):
+        if require_alibaba_final and is_chat_task:
             provider_prompt = await self._build_chat_final_prompt(
                 envelope=envelope,
                 context=context,
             )
 
+        if (
+            chat_multi_model_enabled
+            and self.settings.chat_qwen_classification_enabled
+            and not has_explicit_role
+        ):
+            classified_role, classified_tier, classifier_reason = await self._classify_chat_model_role(
+                envelope=envelope,
+                context=context,
+            )
+            if classified_role is not None:
+                model_role = classified_role
+                classifier_notes.append(f"chat_classifier_role={classified_role}")
+            if classified_tier is not None:
+                classifier_tier = classified_tier
+                classifier_notes.append(f"chat_classifier_tier={classified_tier.value}")
+            if classifier_reason:
+                classifier_notes.append(classifier_reason)
+
         start_tier, start_reason = self.routing_policy.choose_starting_tier(envelope, context)
+        if classifier_tier is not None:
+            start_tier = classifier_tier
+            start_reason = f"{start_reason}; classifier tier override"
+
+        if classifier_notes:
+            start_reason = f"{start_reason}; {'; '.join(classifier_notes[:4])}"
+
         if require_alibaba_final and start_tier == ModelTier.LOCAL:
             start_tier = ModelTier.FLASH
             start_reason = "chat policy requires Alibaba final response"
@@ -158,12 +214,21 @@ class AIRouter:
             if depth > max_depth:
                 break
 
-            estimated_cost = self.cost_engine.estimate(
+            provider, model_name = self._provider_and_model_for_tier(
                 tier=tier,
+                model_role=model_role,
+            )
+            effective_tier = self._effective_tier_for_model_name(
+                model_name=model_name,
+                fallback=tier,
+            )
+
+            estimated_cost = self.cost_engine.estimate(
+                tier=effective_tier,
                 prompt=provider_prompt,
                 context=context,
             )
-            if tier != ModelTier.LOCAL and estimated_cost > self.settings.request_budget_usd:
+            if effective_tier != ModelTier.LOCAL and estimated_cost > self.settings.request_budget_usd:
                 if require_alibaba_final and self.settings.chat_force_alibaba_ignore_budget:
                     last_reason = (
                         "budget cap exceeded but continuing due chat Alibaba policy"
@@ -171,11 +236,6 @@ class AIRouter:
                 else:
                     last_reason = "budget cap reached before external provider"
                     break
-
-            provider, model_name = self._provider_and_model_for_tier(
-                tier=tier,
-                model_role=model_role,
-            )
 
             try:
                 response = await provider.generate(
@@ -191,7 +251,7 @@ class AIRouter:
                 continue
 
             decision = RouteDecision(
-                selected_tier=tier,
+                selected_tier=effective_tier,
                 provider=provider.name,
                 model_name=model_name,
                 reason=f"confidence gate passed ({start_reason}; role={model_role})",
@@ -199,9 +259,23 @@ class AIRouter:
                 estimated_cost_usd=estimated_cost,
             )
 
-            if self._should_escalate(tier=tier, response=response, depth=depth, max_depth=max_depth):
-                last_reason = f"confidence {response.confidence:.2f} below target for {tier.value}"
+            if self._should_escalate(tier=effective_tier, response=response, depth=depth, max_depth=max_depth):
+                last_reason = f"confidence {response.confidence:.2f} below target for {effective_tier.value}"
                 continue
+
+            if chat_multi_model_enabled and self.settings.chat_qwen_verifier_enabled:
+                response, verifier_note = await self._verify_and_repair_chat_answer(
+                    envelope=envelope,
+                    context=context,
+                    provider_prompt=provider_prompt,
+                    candidate_response=response,
+                )
+                if verifier_note:
+                    decision = decision.model_copy(
+                        update={
+                            "reason": f"{decision.reason}; {verifier_note}"
+                        }
+                    )
 
             return response, decision
 
@@ -326,6 +400,314 @@ class AIRouter:
         }
         return json.dumps(summary, ensure_ascii=True, indent=2)
 
+    async def _classify_chat_model_role(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+    ) -> tuple[str | None, ModelTier | None, str]:
+        heuristic_role = self._infer_chat_role_heuristic(envelope=envelope, context=context)
+        classifier_prompt = self._build_chat_classifier_prompt(
+            envelope=envelope,
+            context=context,
+        )
+
+        try:
+            response = await self.alibaba_provider.generate(
+                prompt=classifier_prompt,
+                context=ContextPacket(),
+                model_name=self.settings.alibaba_model_classification,
+            )
+        except (ProviderUnavailable, ProviderFailure):
+            return heuristic_role, None, "chat_classifier_unavailable"
+        except Exception:
+            return heuristic_role, None, "chat_classifier_failed"
+
+        payload = self._extract_json_payload(response.answer)
+        if payload is None:
+            if heuristic_role is not None:
+                return heuristic_role, None, "chat_classifier_fallback_heuristic"
+            return None, None, "chat_classifier_invalid_payload"
+
+        role_raw = str(payload.get("role") or "").strip().lower()
+        role = role_raw if role_raw in CHAT_CLASSIFIER_ALLOWED_ROLES else None
+        if role is None:
+            role = heuristic_role
+
+        tier_raw = str(payload.get("tier") or "").strip().lower()
+        tier = self._safe_model_tier(tier_raw)
+
+        return role, tier, "chat_classifier_ok"
+
+    def _infer_chat_role_heuristic(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+    ) -> str | None:
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+        retrieval = metadata.get("retrieval") if isinstance(metadata.get("retrieval"), dict) else {}
+        prompt = (envelope.prompt or "").lower()
+
+        intent = str(retrieval.get("user_intent") or "").strip().lower()
+        context_count = len(retrieval.get("context_packet", retrieval.get("contexts", [])))
+        dependency_count = len(retrieval.get("dependencies", []))
+
+        if intent == "architecture":
+            return "long_context"
+
+        code_markers = {
+            ".lua",
+            ".xml",
+            ".py",
+            ".json",
+            "arquivo",
+            "file",
+            "script",
+            "function",
+            "classe",
+            "class",
+            "drop",
+            "loot",
+            "patch",
+            "diff",
+        }
+        if any(marker in prompt for marker in code_markers):
+            return "coding"
+
+        if context_count >= 18 or dependency_count >= 100 or len(context.snippets) >= 18:
+            return "long_context"
+
+        return None
+
+    async def _verify_and_repair_chat_answer(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+        provider_prompt: str,
+        candidate_response: ProviderResponse,
+    ) -> tuple[ProviderResponse, str]:
+        verifier_prompt = self._build_chat_verifier_prompt(
+            envelope=envelope,
+            context=context,
+            provider_prompt=provider_prompt,
+            candidate_answer=candidate_response.answer,
+        )
+
+        try:
+            verifier_response = await self.alibaba_provider.generate(
+                prompt=verifier_prompt,
+                context=ContextPacket(),
+                model_name=self.settings.alibaba_model_verifier,
+            )
+        except (ProviderUnavailable, ProviderFailure):
+            return candidate_response, "chat_verifier_unavailable"
+        except Exception:
+            return candidate_response, "chat_verifier_failed"
+
+        aggregated = candidate_response.model_copy(
+            update={
+                "prompt_tokens": candidate_response.prompt_tokens + verifier_response.prompt_tokens,
+                "completion_tokens": candidate_response.completion_tokens + verifier_response.completion_tokens,
+                "total_tokens": candidate_response.total_tokens + verifier_response.total_tokens,
+                "cost_usd": round(candidate_response.cost_usd + verifier_response.cost_usd, 6),
+            }
+        )
+
+        payload = self._extract_json_payload(verifier_response.answer)
+        if payload is None:
+            return aggregated, "chat_verifier_invalid_payload"
+
+        verdict_raw = str(payload.get("verdict") or "").strip().lower()
+        verdict = verdict_raw if verdict_raw in CHAT_VERIFIER_ALLOWED_VERDICTS else "ok"
+
+        try:
+            verifier_confidence = float(payload.get("confidence") or candidate_response.confidence)
+        except Exception:
+            verifier_confidence = candidate_response.confidence
+        verifier_confidence = max(0.0, min(1.0, verifier_confidence))
+
+        issues_raw = payload.get("issues", [])
+        issues: list[str] = []
+        if isinstance(issues_raw, list):
+            issues = [str(item).strip() for item in issues_raw if str(item).strip()][:8]
+
+        min_confidence = max(0.0, min(1.0, self.settings.chat_qwen_verifier_min_confidence))
+        needs_repair = verdict == "needs_repair" or verifier_confidence < min_confidence
+
+        if not needs_repair:
+            merged_confidence = max(0.0, min(1.0, (aggregated.confidence + verifier_confidence) / 2.0))
+            return (
+                aggregated.model_copy(update={"confidence": merged_confidence}),
+                f"chat_verifier=ok({self.settings.alibaba_model_verifier})",
+            )
+
+        if not self.settings.chat_qwen_repair_enabled:
+            return aggregated, "chat_verifier=needs_repair(repair_disabled)"
+
+        repair_prompt = self._build_chat_repair_prompt(
+            envelope=envelope,
+            context=context,
+            candidate_answer=candidate_response.answer,
+            verifier_issues=issues,
+        )
+
+        try:
+            repair_response = await self.alibaba_provider.generate(
+                prompt=repair_prompt,
+                context=context,
+                model_name=self.settings.alibaba_model_repair,
+            )
+        except (ProviderUnavailable, ProviderFailure):
+            return aggregated, "chat_repair_unavailable"
+        except Exception:
+            return aggregated, "chat_repair_failed"
+
+        repaired_confidence = max(0.40, min(0.95, (repair_response.confidence + verifier_confidence) / 2.0))
+        merged = repair_response.model_copy(
+            update={
+                "confidence": repaired_confidence,
+                "prompt_tokens": aggregated.prompt_tokens + repair_response.prompt_tokens,
+                "completion_tokens": aggregated.completion_tokens + repair_response.completion_tokens,
+                "total_tokens": aggregated.total_tokens + repair_response.total_tokens,
+                "cost_usd": round(aggregated.cost_usd + repair_response.cost_usd, 6),
+            }
+        )
+
+        return (
+            merged,
+            f"chat_verifier=repair({self.settings.alibaba_model_verifier}->{self.settings.alibaba_model_repair})",
+        )
+
+    def _build_chat_classifier_prompt(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+    ) -> str:
+        retrieval_summary = self._chat_retrieval_summary(
+            envelope=envelope,
+            context=context,
+        )
+
+        return (
+            "You are BRASA Chat Classifier.\n"
+            "Return ONLY valid JSON (no markdown) with this schema:\n"
+            "{\n"
+            '  "role": "default|coding|long_context|planning|compression",\n'
+            '  "tier": "flash|plus|max|"\n'
+            "}\n"
+            "Rules:\n"
+            "- role must reflect the best Qwen specialization for the final chat answer.\n"
+            "- tier may be empty when no override is needed.\n\n"
+            f"User request:\n{envelope.prompt}\n\n"
+            f"Retrieval summary:\n{retrieval_summary}"
+        )
+
+    def _build_chat_verifier_prompt(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+        provider_prompt: str,
+        candidate_answer: str,
+    ) -> str:
+        retrieval_summary = self._chat_retrieval_summary(
+            envelope=envelope,
+            context=context,
+        )
+
+        return (
+            "You are BRASA Chat Verifier.\n"
+            "Check if the candidate answer is grounded in project evidence and follows the answer contract.\n"
+            "Return ONLY valid JSON with this schema:\n"
+            "{\n"
+            '  "verdict": "ok|needs_repair",\n'
+            '  "confidence": 0.0,\n'
+            '  "issues": ["string"]\n'
+            "}\n"
+            "Rules:\n"
+            "- Mark needs_repair when the answer invents facts, omits key evidence, or contradicts context.\n"
+            "- Keep issues concise and actionable.\n\n"
+            f"User request:\n{envelope.prompt}\n\n"
+            f"Retriever context summary:\n{retrieval_summary}\n\n"
+            f"Generator prompt:\n{provider_prompt[:3500]}\n\n"
+            f"Candidate answer:\n{candidate_answer}"
+        )
+
+    def _build_chat_repair_prompt(
+        self,
+        *,
+        envelope: RequestEnvelope,
+        context: ContextPacket,
+        candidate_answer: str,
+        verifier_issues: list[str],
+    ) -> str:
+        retrieval_summary = self._chat_retrieval_summary(
+            envelope=envelope,
+            context=context,
+        )
+
+        issues_json = json.dumps(verifier_issues[:10], ensure_ascii=True)
+        return (
+            "You are BRASA Chat Repair model.\n"
+            "Rewrite the candidate answer to be fully grounded in project evidence.\n"
+            "Return only the repaired final answer in the user's language.\n"
+            "Do not mention internal model pipeline, verifier, or repair steps.\n\n"
+            "Hard rules:\n"
+            "- Keep the same three sections: Confirmed in project, Hypotheses or missing evidence, Quick verification path.\n"
+            "- Remove unsupported claims and keep uncertainty explicit.\n"
+            "- Cite evidence source identifiers when stating confirmed facts.\n\n"
+            f"User request:\n{envelope.prompt}\n\n"
+            f"Verifier issues:\n{issues_json}\n\n"
+            f"Retrieval summary:\n{retrieval_summary}\n\n"
+            f"Candidate answer to repair:\n{candidate_answer}"
+        )
+
+    def _safe_model_tier(self, value: str) -> ModelTier | None:
+        raw = (value or "").strip().lower()
+        mapping = {
+            "flash": ModelTier.FLASH,
+            "plus": ModelTier.PLUS,
+            "max": ModelTier.MAX,
+        }
+        return mapping.get(raw)
+
+    def _extract_json_payload(self, text: str) -> dict[str, object] | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines:
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+
+        payload = self._try_parse_json(raw)
+        if payload is not None:
+            return payload
+
+        first = raw.find("{")
+        last = raw.rfind("}")
+        if first >= 0 and last > first:
+            return self._try_parse_json(raw[first : last + 1])
+
+        return None
+
+    def _try_parse_json(self, text: str) -> dict[str, object] | None:
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return None
+
+        if isinstance(payload, dict):
+            return payload
+        return None
+
     def _should_escalate(
         self,
         *,
@@ -375,6 +757,20 @@ class AIRouter:
         if tier == ModelTier.PLUS:
             return self.settings.alibaba_model_plus
         return self.settings.alibaba_model_max
+
+    def _effective_tier_for_model_name(self, *, model_name: str, fallback: ModelTier) -> ModelTier:
+        lowered = (model_name or "").strip().lower()
+        if not lowered:
+            return fallback
+
+        if "max" in lowered:
+            return ModelTier.MAX
+        if "plus" in lowered:
+            return ModelTier.PLUS
+        if "flash" in lowered or "turbo" in lowered:
+            return ModelTier.FLASH
+
+        return fallback
 
     def _resolve_model_role(self, envelope: RequestEnvelope) -> str:
         metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}

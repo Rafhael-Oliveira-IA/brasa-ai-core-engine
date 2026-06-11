@@ -4,15 +4,18 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.action_engine import CognitiveActionEngine
 from app.calibration import CognitiveDiagnosticsEngine
+from app.conversation import ConversationRepository
 from app.context_builder import ContextBuilder
 from app.contracts import (
     ActionExecuteRequest,
+    ActionExecutionOptions,
     ActionExecutionReport,
     ActionPlan,
     ActionPlanRequest,
@@ -22,6 +25,14 @@ from app.contracts import (
     CognitiveFeedbackCreateRequest,
     CognitiveFeedbackEntry,
     CognitiveFeedbackSearchResponse,
+    ConversationMessage,
+    ConversationMessageRole,
+    ConversationMessageSearchResponse,
+    ConversationSendRequest,
+    ConversationSendResponse,
+    ConversationSession,
+    ConversationSessionCreateRequest,
+    ConversationSessionSearchResponse,
     ContextAssembleResponse,
     EvaluationReport,
     EvaluationRunRequest,
@@ -38,6 +49,7 @@ from app.contracts import (
     TaskType,
     WatcherCheckReport,
     WatcherCheckRequest,
+    WorkspaceFileContentResponse,
 )
 from app.evaluation import EvaluationEngine
 from app.feedback import CognitiveFeedbackRepository
@@ -67,6 +79,7 @@ class RuntimeContainer:
     settings: Settings
     memory_repository: MemoryRepository
     feedback_repository: CognitiveFeedbackRepository
+    conversation_repository: ConversationRepository
     knowledge_compiler: KnowledgeCompiler
     ingestion_pipeline: ProjectIngestionPipeline
     watcher_engine: FileSystemWatcherEngine
@@ -85,6 +98,7 @@ class RuntimeContainer:
 def build_runtime(settings: Settings) -> RuntimeContainer:
     memory_repository = MemoryRepository(settings.sqlite_path)
     feedback_repository = CognitiveFeedbackRepository(settings.sqlite_path)
+    conversation_repository = ConversationRepository(settings.sqlite_path)
 
     include_extensions = {
         item.strip()
@@ -147,6 +161,7 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
 
     context_builder = ContextBuilder(
         memory_repository=memory_repository,
+        max_chars=settings.chat_context_max_chars,
         knowledge_compiler=knowledge_compiler,
         project_artifacts_root=settings.data_dir.parent / ".brasa",
         embedding_client=embedding_client,
@@ -232,6 +247,7 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         settings=settings,
         memory_repository=memory_repository,
         feedback_repository=feedback_repository,
+        conversation_repository=conversation_repository,
         knowledge_compiler=knowledge_compiler,
         ingestion_pipeline=ingestion_pipeline,
         watcher_engine=watcher_engine,
@@ -398,6 +414,598 @@ def scope_orchestrator(payload: OrchestratorRunRequest) -> OrchestratorRunReques
     )
 
 
+def scope_conversation_session_create(
+    payload: ConversationSessionCreateRequest,
+) -> ConversationSessionCreateRequest:
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+
+    return payload.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id),
+        }
+    )
+
+
+def scope_conversation_send(payload: ConversationSendRequest) -> ConversationSendRequest:
+    workspace_id = normalize_workspace_id(payload.workspace_id)
+    return payload.model_copy(
+        update={
+            "workspace_id": workspace_id,
+            "project_id": scoped_project_id(project_id=payload.project_id, workspace_id=workspace_id),
+        }
+    )
+
+
+def resolve_workspace_file_path(*, workspace_root: Path, relative_path: str) -> Path:
+    raw = str(relative_path or "").replace("\\", "/").strip()
+    if not raw:
+        raise ValueError("File path is required.")
+
+    if raw.startswith("/"):
+        raise ValueError("Absolute paths are not allowed.")
+    if len(raw) >= 2 and raw[1] == ":":
+        raise ValueError("Drive-prefixed absolute paths are not allowed.")
+
+    while raw.startswith("./"):
+        raw = raw[2:]
+
+    parts = [item for item in raw.split("/") if item and item != "."]
+    if not parts or ".." in parts:
+        raise ValueError("Path is invalid or escapes workspace root.")
+
+    normalized = "/".join(parts)
+    resolved_root = workspace_root.resolve()
+    resolved_target = (resolved_root / normalized).resolve()
+
+    try:
+        resolved_target.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError("Path is outside workspace root.") from exc
+
+    return resolved_target
+
+
+async def run_chat_task(runtime: RuntimeContainer, payload: RequestEnvelope) -> TaskResponse:
+    if hasattr(runtime, "task_engine"):
+        task_request = TaskRequest(
+            task_id=payload.request_id,
+            workspace_id=payload.workspace_id,
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+            task_type=TaskType.CHAT,
+            prompt=payload.prompt,
+            tier_hint=payload.tier_hint,
+            metadata=payload.metadata,
+        )
+        task_response, _ = await runtime.task_engine.run(task_request)
+        return task_response
+
+    if hasattr(runtime, "query_engine"):
+        chat_response, _ = await runtime.query_engine.run(payload)
+        return TaskResponse(
+            task_id=payload.request_id,
+            task_type=TaskType.CHAT,
+            answer=chat_response.answer,
+            confidence=chat_response.confidence,
+            route=chat_response.route,
+            context_sources=chat_response.context_sources,
+            trace_id=chat_response.trace_id,
+            pipeline=[],
+            retrieval={},
+        )
+
+    raise HTTPException(status_code=503, detail="No chat execution engine is available in this runtime.")
+
+
+def _payload_of(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump(mode="json")
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return [_payload_of(item) for item in value]
+    return value
+
+
+def _bool_option(raw: Any, *, default: bool) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _int_option(raw: Any, *, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _task_type_from_command(raw: str) -> TaskType:
+    normalized = (raw or "").strip().lower()
+    try:
+        return TaskType(normalized)
+    except ValueError as exc:
+        supported = ", ".join(item.value for item in TaskType)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid task_type '{raw}'. Supported values: {supported}",
+        ) from exc
+
+
+async def run_conversation_command(
+    *,
+    runtime: RuntimeContainer,
+    session_id: str,
+    user_message: ConversationMessage,
+    payload: ConversationSendRequest,
+) -> dict[str, Any]:
+    command = str(payload.command or "chat").strip().lower()
+    options = payload.options if isinstance(payload.options, dict) else {}
+
+    if command == "chat":
+        envelope = RequestEnvelope(
+            workspace_id=payload.workspace_id,
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+            prompt=payload.prompt,
+            metadata={
+                **payload.metadata,
+                "source": "conversation_api",
+                "task_type": "chat",
+                "conversation_session_id": session_id,
+                "conversation_message_id": user_message.message_id,
+            },
+        )
+        task_response = await run_chat_task(runtime, envelope)
+        return {
+            "operation": command,
+            "answer": task_response.answer,
+            "task": task_response,
+            "operation_result": {
+                "task_id": task_response.task_id,
+                "task_type": task_response.task_type.value,
+            },
+            "request_id": task_response.task_id,
+            "trace_id": task_response.trace_id,
+            "route": task_response.route,
+            "context_sources": task_response.context_sources,
+            "confidence": task_response.confidence,
+        }
+
+    if command == "task":
+        if not hasattr(runtime, "task_engine"):
+            raise HTTPException(status_code=503, detail="Task engine is not available in this runtime.")
+
+        task_type = _task_type_from_command(str(options.get("task_type") or "chat"))
+        task_request = scope_task(
+            TaskRequest(
+                workspace_id=payload.workspace_id,
+                project_id=payload.project_id,
+                user_id=payload.user_id,
+                task_type=task_type,
+                prompt=payload.prompt,
+                metadata={
+                    **payload.metadata,
+                    "source": "conversation_api",
+                    "conversation_session_id": session_id,
+                    "conversation_message_id": user_message.message_id,
+                    "conversation_command": command,
+                },
+            )
+        )
+        task_response, retrieval = await runtime.task_engine.run(task_request)
+        return {
+            "operation": command,
+            "answer": task_response.answer,
+            "task": task_response,
+            "operation_result": {
+                "task": _payload_of(task_response),
+                "retrieval": _payload_of(retrieval),
+            },
+            "request_id": task_response.task_id,
+            "trace_id": task_response.trace_id,
+            "route": task_response.route,
+            "context_sources": task_response.context_sources,
+            "confidence": task_response.confidence,
+        }
+
+    if command == "action_plan":
+        if not hasattr(runtime, "action_engine"):
+            raise HTTPException(status_code=503, detail="Action engine is not available in this runtime.")
+
+        plan_request = scope_action_plan(
+            ActionPlanRequest(
+                workspace_id=payload.workspace_id,
+                project_id=payload.project_id,
+                user_id=payload.user_id,
+                prompt=payload.prompt,
+                max_actions=_int_option(options.get("max_actions"), default=8, minimum=1, maximum=40),
+                metadata={
+                    **payload.metadata,
+                    "source": "conversation_api",
+                    "conversation_session_id": session_id,
+                    "conversation_message_id": user_message.message_id,
+                    "conversation_command": command,
+                },
+            )
+        )
+        plan, retrieval = runtime.action_engine.plan(plan_request)
+        highest_risk = max((step.risk.value for step in plan.actions), default="low")
+        return {
+            "operation": command,
+            "answer": (
+                f"Action plan generated with {len(plan.actions)} action(s). "
+                f"Highest risk: {highest_risk}."
+            ),
+            "task": None,
+            "operation_result": {
+                "plan": _payload_of(plan),
+                "retrieval": _payload_of(retrieval),
+            },
+            "request_id": plan.plan_id,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "action_execute":
+        if not hasattr(runtime, "action_engine"):
+            raise HTTPException(status_code=503, detail="Action engine is not available in this runtime.")
+
+        raw_plan = options.get("plan")
+        if not isinstance(raw_plan, dict):
+            raise HTTPException(status_code=400, detail="action_execute requires options.plan payload.")
+
+        execution_options_payload = options.get("execution_options", {})
+        scoped_request = scope_action_execute(
+            ActionExecuteRequest(
+                workspace_id=payload.workspace_id,
+                project_id=payload.project_id,
+                user_id=payload.user_id,
+                plan=ActionPlan.model_validate(raw_plan),
+                options=ActionExecutionOptions.model_validate(execution_options_payload),
+            )
+        )
+
+        report = runtime.action_engine.execute(scoped_request)
+        if scoped_request.options.run_feedback_loop and not scoped_request.options.dry_run and report.applied > 0:
+            report.feedback_notes = run_action_feedback_loop(
+                runtime=runtime,
+                workspace_id=scoped_request.workspace_id,
+                project_id=scoped_request.project_id,
+                user_id=scoped_request.user_id,
+                report=report,
+            )
+
+        return {
+            "operation": command,
+            "answer": (
+                f"Action execution completed. applied={report.applied}, "
+                f"failed={report.failed}, changed_files={len(report.changed_files)}."
+            ),
+            "task": None,
+            "operation_result": {
+                "execution": _payload_of(report),
+            },
+            "request_id": report.execution_id,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "action_rollback":
+        if not hasattr(runtime, "action_engine"):
+            raise HTTPException(status_code=503, detail="Action engine is not available in this runtime.")
+
+        execution_id = str(options.get("execution_id") or "").strip()
+        if not execution_id:
+            raise HTTPException(status_code=400, detail="action_rollback requires options.execution_id.")
+
+        rollback_request = scope_action_rollback(
+            ActionRollbackRequest(
+                workspace_id=payload.workspace_id,
+                project_id=payload.project_id,
+                user_id=payload.user_id,
+                execution_id=execution_id,
+            )
+        )
+        report = runtime.action_engine.rollback(rollback_request)
+
+        if report.restored_files > 0 or report.removed_files > 0:
+            runtime.memory_repository.add_entry(
+                MemoryEntry(
+                    project_id=rollback_request.project_id,
+                    user_id=rollback_request.user_id,
+                    scope=MemoryScope.EPISODIC,
+                    content=(
+                        f"Rollback executed for action execution {rollback_request.execution_id}.\n"
+                        f"Restored={report.restored_files}, Removed={report.removed_files}."
+                    ),
+                    tags=["action", "rollback", "auto"],
+                    confidence=0.75,
+                    provenance={
+                        "workspace_id": rollback_request.workspace_id,
+                        "execution_id": rollback_request.execution_id,
+                    },
+                )
+            )
+
+        return {
+            "operation": command,
+            "answer": (
+                f"Rollback completed. restored={report.restored_files}, "
+                f"removed={report.removed_files}, skipped={report.skipped_files}."
+            ),
+            "task": None,
+            "operation_result": {
+                "rollback": _payload_of(report),
+            },
+            "request_id": execution_id,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "orchestrator":
+        if not hasattr(runtime, "orchestrator"):
+            raise HTTPException(status_code=503, detail="Orchestrator is not available in this runtime.")
+
+        orchestrator_payload = {
+            "workspace_id": payload.workspace_id,
+            "project_id": payload.project_id,
+            "user_id": payload.user_id,
+            "intent": payload.prompt,
+            "metadata": {
+                **payload.metadata,
+                "source": "conversation_api",
+                "conversation_session_id": session_id,
+                "conversation_message_id": user_message.message_id,
+                "conversation_command": command,
+            },
+            **options,
+        }
+        orchestrator_request = scope_orchestrator(OrchestratorRunRequest.model_validate(orchestrator_payload))
+        report = runtime.orchestrator.run(orchestrator_request)
+
+        return {
+            "operation": command,
+            "answer": (
+                f"Orchestrator run finished with state '{report.final_state.value}'. "
+                f"Iterations: {len(report.iterations)}."
+            ),
+            "task": None,
+            "operation_result": {
+                "orchestrator": _payload_of(report),
+            },
+            "request_id": report.run_id,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "context_assemble":
+        envelope = scope_envelope(
+            RequestEnvelope(
+                workspace_id=payload.workspace_id,
+                project_id=payload.project_id,
+                user_id=payload.user_id,
+                prompt=payload.prompt,
+                metadata={
+                    **payload.metadata,
+                    "source": "conversation_api",
+                    "conversation_session_id": session_id,
+                    "conversation_message_id": user_message.message_id,
+                    "conversation_command": command,
+                },
+            )
+        )
+        packet, retrieval = runtime.context_builder.build(envelope)
+        trace_id = runtime.telemetry.new_trace_id()
+        runtime.telemetry.log_retrieval(trace_id=trace_id, envelope=envelope, retrieval=retrieval)
+
+        return {
+            "operation": command,
+            "answer": (
+                f"Context assembled with {len(packet.snippets)} snippet(s). "
+                f"Retrieval took {retrieval.took_ms} ms."
+            ),
+            "task": None,
+            "operation_result": {
+                "packet": _payload_of(packet),
+                "retrieval": _payload_of(retrieval),
+            },
+            "request_id": envelope.request_id,
+            "trace_id": trace_id,
+            "route": None,
+            "context_sources": packet.provenance,
+            "confidence": None,
+        }
+
+    if command == "knowledge_sync":
+        sync_payload = KnowledgeSyncRequest.model_validate(options)
+        report = runtime.knowledge_compiler.sync(
+            force=sync_payload.force,
+            include_extensions=sync_payload.include_extensions,
+        )
+        return {
+            "operation": command,
+            "answer": (
+                f"Knowledge sync completed. scanned={report.scanned_files}, "
+                f"changed={report.changed_nodes}, stale={report.stale_nodes}."
+            ),
+            "task": None,
+            "operation_result": {
+                "knowledge_sync": _payload_of(report),
+            },
+            "request_id": None,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "ingestion_run":
+        project_path = str(options.get("project_path") or "").strip()
+        if not project_path:
+            raise HTTPException(status_code=400, detail="ingestion_run requires options.project_path.")
+
+        report = runtime.ingestion_pipeline.run(
+            project_path=Path(project_path),
+            force=_bool_option(options.get("force"), default=False),
+            workspace_id=payload.workspace_id,
+        )
+
+        return {
+            "operation": command,
+            "answer": (
+                f"Ingestion completed for project '{report.project_name}'. "
+                f"Files indexed: {report.indexed_files}."
+            ),
+            "task": None,
+            "operation_result": {
+                "ingestion": _payload_of(report),
+            },
+            "request_id": None,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "watcher_check":
+        project_path = str(options.get("project_path") or "").strip()
+        if not project_path:
+            raise HTTPException(status_code=400, detail="watcher_check requires options.project_path.")
+
+        report = runtime.watcher_engine.check(
+            project_path=Path(project_path),
+            workspace_id=payload.workspace_id,
+        )
+        if _bool_option(options.get("auto_rebuild"), default=True) and report.changes_detected > 0:
+            runtime.ingestion_pipeline.run(
+                project_path=Path(project_path),
+                force=False,
+                workspace_id=payload.workspace_id,
+            )
+            report = report.model_copy(
+                update={
+                    "rebuilt": True,
+                    "notes": [*report.notes, "Incremental ingestion triggered by watcher."],
+                }
+            )
+
+        return {
+            "operation": command,
+            "answer": (
+                f"Watcher check completed. changes_detected={report.changes_detected}, "
+                f"rebuilt={report.rebuilt}."
+            ),
+            "task": None,
+            "operation_result": {
+                "watcher": _payload_of(report),
+            },
+            "request_id": None,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "evaluation_run":
+        report = runtime.evaluation_engine.run(
+            limit=_int_option(options.get("limit"), default=300, minimum=20, maximum=5000),
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+        )
+        return {
+            "operation": command,
+            "answer": (
+                f"Evaluation completed. sample_size={report.sample_size}, "
+                f"retrieval_precision={report.metrics.get('retrieval_precision', 0.0):.3f}."
+            ),
+            "task": None,
+            "operation_result": {
+                "evaluation": _payload_of(report),
+            },
+            "request_id": report.report_id,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "reflection_run":
+        report = runtime.reflection.run_once(
+            trigger="conversation",
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+        )
+        return {
+            "operation": command,
+            "answer": (
+                f"Reflection completed. duplicates_removed={report.duplicates_removed}, "
+                f"low_confidence_entries={report.low_confidence_entries}."
+            ),
+            "task": None,
+            "operation_result": {
+                "reflection": _payload_of(report),
+            },
+            "request_id": report.task_id,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    if command == "diagnostics":
+        report = runtime.diagnostics_engine.run(project_id=payload.project_id, user_id=payload.user_id)
+        return {
+            "operation": command,
+            "answer": (
+                f"Diagnostics completed with {len(report.get('failure_counts', {}))} failure bucket(s)."
+            ),
+            "task": None,
+            "operation_result": {
+                "diagnostics": _payload_of(report),
+            },
+            "request_id": None,
+            "trace_id": None,
+            "route": None,
+            "context_sources": [],
+            "confidence": None,
+        }
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Invalid command. Supported commands: "
+            "chat, task, action_plan, action_execute, action_rollback, orchestrator, "
+            "context_assemble, knowledge_sync, ingestion_run, watcher_check, "
+            "evaluation_run, reflection_run, diagnostics"
+        ),
+    )
+
+
 def run_action_feedback_loop(
     *,
     runtime: RuntimeContainer,
@@ -471,6 +1079,45 @@ def health(request: Request) -> dict[str, object]:
         "reflection_scheduler": runtime.settings.enable_reflection_scheduler,
         "knowledge_stale_nodes": runtime.knowledge_compiler.stale_count(),
     }
+
+
+@app.get("/v1/workspace/file", response_model=WorkspaceFileContentResponse)
+def read_workspace_file(
+    request: Request,
+    path: str = Query(..., min_length=1),
+    max_chars: int = Query(default=20000, ge=200, le=200000),
+) -> WorkspaceFileContentResponse:
+    runtime = runtime_from(request)
+    workspace_root = runtime.settings.action_workspace_root.resolve()
+
+    try:
+        target = resolve_workspace_file_path(workspace_root=workspace_root, relative_path=path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Workspace file not found.")
+
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        content = target.read_text(encoding="utf-8", errors="replace")
+
+    size_bytes = target.stat().st_size
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+
+    relative = target.relative_to(workspace_root).as_posix()
+
+    return WorkspaceFileContentResponse(
+        path=relative,
+        exists=True,
+        content=content,
+        truncated=truncated,
+        size_bytes=size_bytes,
+        encoding="utf-8",
+    )
 
 
 @app.post("/v1/memory", response_model=MemoryEntry)
@@ -561,43 +1208,181 @@ def search_memory(
     return MemorySearchResponse(items=items)
 
 
+@app.post("/v1/conversations/sessions", response_model=ConversationSession)
+def create_conversation_session(
+    payload: ConversationSessionCreateRequest,
+    request: Request,
+) -> ConversationSession:
+    runtime = runtime_from(request)
+    payload = scope_conversation_session_create(payload)
+
+    session = ConversationSession(
+        workspace_id=payload.workspace_id,
+        project_id=payload.project_id,
+        user_id=payload.user_id,
+        title=payload.title,
+        metadata=payload.metadata,
+    )
+    return runtime.conversation_repository.create_session(session)
+
+
+@app.get("/v1/conversations/sessions", response_model=ConversationSessionSearchResponse)
+def list_conversation_sessions(
+    request: Request,
+    workspace_id: str = Query(default="brasa_ai_workspace"),
+    project_id: str = Query(...),
+    user_id: str = Query(...),
+    limit: int = Query(default=40, ge=1, le=200),
+) -> ConversationSessionSearchResponse:
+    runtime = runtime_from(request)
+    normalized_workspace = normalize_workspace_id(workspace_id)
+    scoped_project = scoped_project_id(project_id=project_id, workspace_id=normalized_workspace)
+
+    items = runtime.conversation_repository.list_sessions(
+        project_id=scoped_project,
+        user_id=user_id,
+        limit=limit,
+    )
+    return ConversationSessionSearchResponse(items=items)
+
+
+@app.get("/v1/conversations/{session_id}/messages", response_model=ConversationMessageSearchResponse)
+def list_conversation_messages(
+    session_id: str,
+    request: Request,
+    workspace_id: str = Query(default="brasa_ai_workspace"),
+    project_id: str = Query(...),
+    user_id: str = Query(...),
+    limit: int = Query(default=300, ge=1, le=1000),
+) -> ConversationMessageSearchResponse:
+    runtime = runtime_from(request)
+    normalized_workspace = normalize_workspace_id(workspace_id)
+    scoped_project = scoped_project_id(project_id=project_id, workspace_id=normalized_workspace)
+
+    session = runtime.conversation_repository.get_session(
+        session_id=session_id,
+        project_id=scoped_project,
+        user_id=user_id,
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Conversation session not found.")
+
+    items = runtime.conversation_repository.list_messages(
+        session_id=session_id,
+        project_id=scoped_project,
+        user_id=user_id,
+        limit=limit,
+    )
+    return ConversationMessageSearchResponse(items=items)
+
+
+@app.post("/v1/conversations/{session_id}/send", response_model=ConversationSendResponse)
+async def send_conversation_message(
+    session_id: str,
+    payload: ConversationSendRequest,
+    request: Request,
+) -> ConversationSendResponse:
+    runtime = runtime_from(request)
+    payload = scope_conversation_send(payload)
+
+    session = runtime.conversation_repository.get_session(
+        session_id=session_id,
+        project_id=payload.project_id,
+        user_id=payload.user_id,
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Conversation session not found.")
+
+    user_message = runtime.conversation_repository.add_message(
+        ConversationMessage(
+            session_id=session_id,
+            workspace_id=payload.workspace_id,
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+            role=ConversationMessageRole.USER,
+            content=payload.prompt,
+            metadata={
+                **payload.metadata,
+                "source": "conversation_api",
+                "command": payload.command,
+                "options": payload.options,
+            },
+        )
+    )
+
+    try:
+        operation = await run_conversation_command(
+            runtime=runtime,
+            session_id=session_id,
+            user_message=user_message,
+            payload=payload,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Conversation execution failed: {exc}") from exc
+
+    task_response = operation.get("task")
+    trace_id = str(operation.get("trace_id") or "").strip() or None
+    request_id = str(operation.get("request_id") or "").strip() or None
+
+    assistant_message = runtime.conversation_repository.add_message(
+        ConversationMessage(
+            session_id=session_id,
+            workspace_id=payload.workspace_id,
+            project_id=payload.project_id,
+            user_id=payload.user_id,
+            role=ConversationMessageRole.ASSISTANT,
+            content=str(operation.get("answer") or ""),
+            request_id=request_id,
+            trace_id=trace_id,
+            route=operation.get("route"),
+            context_sources=list(operation.get("context_sources") or []),
+            confidence=operation.get("confidence"),
+            metadata={
+                "source": "conversation_runtime",
+                "operation": operation.get("operation"),
+                "operation_result": operation.get("operation_result"),
+            },
+        )
+    )
+
+    updated_session = runtime.conversation_repository.get_session(
+        session_id=session_id,
+        project_id=payload.project_id,
+        user_id=payload.user_id,
+    )
+
+    return ConversationSendResponse(
+        session=updated_session or session,
+        user_message=user_message,
+        assistant_message=assistant_message,
+        task=task_response,
+        operation=str(operation.get("operation") or "chat"),
+        operation_result=dict(operation.get("operation_result") or {}),
+    )
+
+
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(payload: RequestEnvelope, request: Request) -> ChatResponse:
     runtime = runtime_from(request)
     payload = scope_envelope(payload)
 
-    if hasattr(runtime, "task_engine"):
-        task_request = TaskRequest(
-            task_id=payload.request_id,
-            workspace_id=payload.workspace_id,
-            project_id=payload.project_id,
-            user_id=payload.user_id,
-            task_type=TaskType.CHAT,
-            prompt=payload.prompt,
-            tier_hint=payload.tier_hint,
-            metadata=payload.metadata,
-        )
-
-        try:
-            task_response, _ = await runtime.task_engine.run(task_request)
-        except Exception as exc:  # pragma: no cover
-            raise HTTPException(status_code=500, detail=f"Chat execution failed: {exc}") from exc
-
-        return ChatResponse(
-            request_id=payload.request_id,
-            answer=task_response.answer,
-            confidence=task_response.confidence,
-            route=task_response.route,
-            context_sources=task_response.context_sources,
-            trace_id=task_response.trace_id,
-        )
-
     try:
-        chat_response, _ = await runtime.query_engine.run(payload)
+        task_response = await run_chat_task(runtime, payload)
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Chat execution failed: {exc}") from exc
 
-    return chat_response
+    return ChatResponse(
+        request_id=payload.request_id,
+        answer=task_response.answer,
+        confidence=task_response.confidence,
+        route=task_response.route,
+        context_sources=task_response.context_sources,
+        trace_id=task_response.trace_id,
+    )
 
 
 @app.post("/v1/tasks/execute", response_model=TaskResponse)

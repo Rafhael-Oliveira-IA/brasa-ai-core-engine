@@ -4,14 +4,19 @@ Persistent cognitive runtime for long-lived game codebases.
 
 BRASA combines hierarchical project knowledge, hybrid retrieval, model routing, action planning/execution, and feedback-driven calibration into one operational runtime.
 
-Cognitive Runtime Update
-https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
+## Project Evolution (Key PRs)
 
-Reflection & Cognitive Calibration & Agent System + Better UI Update
-https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
+Use these PRs as historical anchors when starting a new AI chat or reviewing architecture decisions.
 
-Cognitive Distributed Runtime
-https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/4
+- [Cognitive Runtime Update (PR #1)](https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1)
+  - baseline cognitive runtime foundation
+  - initial integration between retrieval, routing, and persistent operation
+- [Reflection + Cognitive Calibration + Agent System + Better UI (PR #2)](https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2)
+  - reflection and calibration quality loop improvements
+  - agent system and usability/workbench evolution
+- [Cognitive Distributed Runtime (PR #4)](https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/4)
+  - distributed cognition direction and runtime specialization strategy
+  - stronger separation between local deterministic layers and cloud reasoning layers
 
 <img width="519" height="894" alt="image" src="https://github.com/user-attachments/assets/70b6f4af-32e3-4ad6-9ddf-e1c09467cc55" />
 <img width="697" height="699" alt="image" src="https://github.com/user-attachments/assets/db4fffb2-134d-4b20-90b7-38e860b80de5" />
@@ -407,6 +412,12 @@ Key variables:
 - `MAX_ESCALATION_DEPTH`
 - `CHAT_FORCE_ALIBABA_RESPONSE`
 - `CHAT_FORCE_ALIBABA_IGNORE_BUDGET`
+- `CHAT_CONTEXT_MAX_CHARS`
+- `CHAT_QWEN_MULTI_MODEL_ENABLED`
+- `CHAT_QWEN_CLASSIFICATION_ENABLED`
+- `CHAT_QWEN_VERIFIER_ENABLED`
+- `CHAT_QWEN_REPAIR_ENABLED`
+- `CHAT_QWEN_VERIFIER_MIN_CONFIDENCE`
 - `CHAT_LOCAL_ASSIST_ENABLED`
 - `CHAT_LOCAL_ASSIST_MAX_CHARS`
 - `CHAT_AUTO_REINGEST_ON_WEAK_CONTEXT`
@@ -556,6 +567,62 @@ This script performs:
 - Action execution enforces blocked paths and validation before writing files.
 - Use rollback endpoint after risky operations or test runs.
 - If project artifacts are stale, run `POST /v1/knowledge/sync` before heavy reasoning sessions.
+
+## AI Handoff (Quick Start For Next Chat)
+
+Use this when starting a new AI session and you need the assistant to be productive quickly.
+
+### 1) Verify runtime in < 30 seconds
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/health"
+```
+
+If down, run:
+
+```bat
+run-all-services.bat
+```
+
+### 2) Verify context quality before asking for patches
+
+```powershell
+$body = @{workspace_id='mmo_workspace'; project_id='SERVIDOR - ORIGINAL'; user_id='cognitive-user'; prompt='quais os loots do arcanine ?'} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/v1/context/assemble" -ContentType "application/json" -Body $body
+```
+
+Expected for this prompt:
+
+- `artifact:file:data/monster/kanto/arcanine.lua` should appear near top context sources.
+- snippet content should include a `LootEvidence[...]` block with concrete `pokemon.loot` rows.
+
+### 3) Current chat stack behavior (important)
+
+- Chat uses Alibaba final response policy.
+- Chat supports Qwen multi-model pipeline (classification -> generation -> verifier -> repair), with safe fallback when classifier/verifier is unavailable.
+- Route tier/cost now reflects effective model family from resolved `model_name` (flash/plus/max), not only initial tier heuristic.
+- Chat retrieval budget is configurable via `CHAT_CONTEXT_MAX_CHARS` (default currently expanded for richer context windows).
+
+### 4) Retrieval safeguards already in place
+
+- Loot queries prioritize monster artifacts in `data/monster` and `data/monsters` (including `.lua`).
+- Short stopwords are filtered in intent terms to reduce noisy relevance spikes.
+- Stale episodic "no evidence" chat memories are downweighted for code/loot factual queries.
+- Alibaba provider consumes all selected context snippets from `ContextPacket` (no hard small cap).
+
+### 5) Regression commands used for this runtime
+
+```bash
+python -m pytest tests/test_routing.py tests/test_retrieval_engine.py tests/test_retrieval_noise_filtering.py tests/test_alibaba_provider_runtime.py tests/test_main_runtime_bootstrap.py -q
+```
+
+### 6) Memory files for future chats
+
+Repository notes live in:
+
+- `memories/repo/retrieval-chat-lessons.md`
+
+Use this file as the first reference when a new AI chat starts and behavior regresses.
 
 ## Built For
 
