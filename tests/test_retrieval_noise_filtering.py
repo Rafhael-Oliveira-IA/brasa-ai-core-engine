@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.contracts import RequestEnvelope
+from app.contracts import MemoryEntry, MemoryScope, RequestEnvelope
 from app.knowledge.models import KnowledgeLevel
 from app.memory.repository import MemoryRepository
 from app.retrieval import ContextRetrievalEngine
@@ -703,3 +703,199 @@ def test_item_loot_focused_queries_keep_items_xml_under_compression_pressure() -
 
         assert "artifact:file:data/items/items.xml" in sources
         assert any(source.startswith("artifact:file:data/monster/") for source in sources)
+
+
+def test_item_loot_focused_queries_keep_monster_lua_when_explicit_entity_present() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        write_json(
+            metadata_root / "data" / "monster" / "kanto" / "arcanine.meta.json",
+            {
+                "path": "data/monster/kanto/arcanine.lua",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["loot", "heart stone", "fire stone"],
+                "symbols": ["arcanine"],
+                "confidence": 0.92,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "monster" / "kanto" / "arcanine.summary.md",
+            "# arcanine\nloot table with stones and drop conditions\n",
+        )
+
+        write_json(
+            metadata_root / "data" / "items" / "items.meta.json",
+            {
+                "path": "data/items/items.xml",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["id", "type", "loot"],
+                "symbols": ["items"],
+                "confidence": 0.94,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "items" / "items.summary.md",
+            "# items xml\nitem definitions for loot-linked ids\n",
+        )
+
+        for index in range(1, 16):
+            noisy_path = f"data/scripts/noisy/drop_runtime_{index}.lua"
+            write_json(
+                metadata_root / "data" / "scripts" / "noisy" / f"drop_runtime_{index}.meta.json",
+                {
+                    "path": noisy_path,
+                    "modified_at": "2026-06-03T12:00:00+00:00",
+                    "dependencies": ["loot", "drop", "stone"],
+                    "symbols": [f"DropRuntime{index}"],
+                    "confidence": 0.96,
+                },
+            )
+            write_text(
+                summaries_root / "data" / "scripts" / "noisy" / f"drop_runtime_{index}.summary.md",
+                "# drop runtime\nruntime drop flow and loot processing\n" * 35,
+            )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=950,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt="quais os loots do arcanine?",
+        )
+
+        packet, _ = engine.assemble(envelope)
+        sources = [item.source for item in packet.snippets]
+
+        assert "artifact:file:data/monster/kanto/arcanine.lua" in sources
+
+
+def test_item_loot_queries_prioritize_artifact_over_negative_chat_memory() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+
+        write_json(
+            metadata_root / "data" / "monster" / "kanto" / "arcanine.meta.json",
+            {
+                "path": "data/monster/kanto/arcanine.lua",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["loot", "heart stone", "fire stone"],
+                "symbols": ["arcanine"],
+                "confidence": 0.92,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "monster" / "kanto" / "arcanine.summary.md",
+            "# arcanine\nloot table with heart stone and fire stone entries\n",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        repository.add_entry(
+            MemoryEntry(
+                project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+                user_id="u1",
+                scope=MemoryScope.EPISODIC,
+                content=(
+                    "TaskType: chat\n"
+                    "Request: quais os loots do arcanine?\n"
+                    "Response: Nao ha evidencia no projeto e nada foi encontrado."
+                ),
+                confidence=0.9,
+            )
+        )
+
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=900,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt="quais os loots do arcanine ?",
+        )
+
+        packet, _ = engine.assemble(envelope)
+        sources = [item.source for item in packet.snippets]
+
+        assert "artifact:file:data/monster/kanto/arcanine.lua" in sources
+        assert not sources[0].startswith("memory:episodic:")
+
+
+def test_item_loot_queries_append_raw_loot_excerpt_from_source_project() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        project_root = root / ".brasa" / "workspaces" / "mmo_workspace" / "SERVIDOR - ORIGINAL"
+        metadata_root = project_root / "metadata" / "files"
+        summaries_root = project_root / "summaries" / "files"
+        raw_root = project_root / "raw"
+        source_project = root / "source_project"
+
+        write_json(
+            metadata_root / "data" / "monster" / "kanto" / "arcanine.meta.json",
+            {
+                "path": "data/monster/kanto/arcanine.lua",
+                "modified_at": "2026-06-03T12:00:00+00:00",
+                "dependencies": ["onAppear", "onThink"],
+                "symbols": ["Arcanine"],
+                "confidence": 0.9,
+            },
+        )
+        write_text(
+            summaries_root / "data" / "monster" / "kanto" / "arcanine.summary.md",
+            "# arcanine\nsummary without explicit loot details\n",
+        )
+
+        write_json(
+            raw_root / "files_index.json",
+            {
+                "project_path": str(source_project).replace("\\", "/"),
+            },
+        )
+        write_text(
+            source_project / "data" / "monster" / "kanto" / "arcanine.lua",
+            (
+                "local pokemon = {}\n"
+                "pokemon.loot = {\n"
+                "    {id = \"heart stone\", chance = 50000},\n"
+                "    {id = \"fire stone\", chance = 50000},\n"
+                "}\n"
+            ),
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = ContextRetrievalEngine(
+            memory_repository=repository,
+            project_artifacts_root=root / ".brasa",
+            max_chars=1200,
+        )
+
+        envelope = RequestEnvelope(
+            workspace_id="mmo_workspace",
+            project_id=scoped_project_id(project_id="SERVIDOR - ORIGINAL", workspace_id="mmo_workspace"),
+            user_id="u1",
+            prompt="quais os loots do arcanine ?",
+        )
+
+        packet, _ = engine.assemble(envelope)
+        arcanine_snippet = next(
+            item for item in packet.snippets if item.source == "artifact:file:data/monster/kanto/arcanine.lua"
+        )
+
+        assert "LootEvidence[data/monster/kanto/arcanine.lua]" in arcanine_snippet.content
+        assert "heart stone" in arcanine_snippet.content
+        assert "fire stone" in arcanine_snippet.content
