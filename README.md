@@ -10,6 +10,9 @@ https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/1
 Reflection & Cognitive Calibration & Agent System + Better UI Update
 https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/2
 
+Cognitive Distributed Runtime
+https://github.com/Rafhael-Oliveira-IA/brasa-ai-core-engine/pull/4
+
 <img width="519" height="894" alt="image" src="https://github.com/user-attachments/assets/70b6f4af-32e3-4ad6-9ddf-e1c09467cc55" />
 <img width="697" height="699" alt="image" src="https://github.com/user-attachments/assets/db4fffb2-134d-4b20-90b7-38e860b80de5" />
 <img width="1201" height="753" alt="image" src="https://github.com/user-attachments/assets/c03ee921-127b-4df4-9b1f-cde7a23cbfe6" />
@@ -46,6 +49,10 @@ REFLECTION
  ↓
 KNOWLEDGE REPAIR
 ```
+
+## Architecture Decision Records
+
+- [ADR-0001: Cognitive Distributed Runtime Roadmap](docs/adr/ADR-0001-cognitive-distributed-runtime-roadmap.md)
 
 ## Runtime Layers
 
@@ -156,6 +163,176 @@ Retrieval payload includes `auto_reingest` diagnostics:
 - trigger reason
 - sync status and counters
 
+### Optional Low-Cost Cloud Retrieval Assist
+
+BRASA can optionally run a low-cost Alibaba assist pass during retrieval to avoid over-reliance on hardcoded heuristics.
+
+When enabled, the assist pass can:
+
+- classify retrieval intent cheaply
+- suggest priority candidate sources
+- suggest short lexical hint terms for reranking
+
+The runtime remains deterministic and safe when the assist model is unavailable:
+
+- retrieval falls back to local heuristic + graph + semantic flow
+- no endpoint failure is introduced by assist unavailability
+
+## Cognitive Distributed Runtime (Target Architecture)
+
+BRASA should not evolve into a "local does everything, cloud only answers" architecture.
+
+That model scales poorly for long-lived cognitive systems.
+
+The target is a distributed cognition runtime where each layer has a specialized responsibility and cost profile.
+
+### Local Runtime Responsibilities
+
+Local infrastructure should remain responsible for deterministic, high-frequency, low-cost operations:
+
+- scanning and hashing
+- file watching and incremental change detection
+- AST/index pipelines
+- cache and queue management
+- lightweight retrieval and reranking prefilters
+- hot/episodic memory assembly
+- context compression pre-pass
+- fast local drafts
+- offline fallback behavior
+
+### Alibaba Cloud Responsibilities
+
+Cloud layers should be dedicated to high-value cognition:
+
+- deep reasoning over architecture and system interactions
+- code planning and patch strategy synthesis
+- long-context analysis windows
+- reflection and critique passes
+- semantic synthesis over multi-source evidence
+
+## Specialized Model Routing (Next Stage)
+
+Current tier routing (`flash`, `plus`, `max`) is a good baseline, but long-term quality requires role-specialized routing.
+
+Target routing roles:
+
+- intent/classification model
+- coding model
+- long-context architecture model
+- planning model
+- reflection/critic model
+- embedding model
+- compression/summarization model
+- repair model
+- verification model
+
+Example decision flow:
+
+1. Intent classifier detects request shape and risk.
+2. Task router selects the most appropriate model role.
+3. Execution path applies role-specific prompts and constraints.
+4. Critic/verifier layers score output quality before persistence.
+
+## Dynamic Cognitive Windows
+
+For MMO and large live-service architectures, retrieval should support dynamic context windows, not only small fixed packets.
+
+Temporary windows can include full subsystem slices such as:
+
+- combat architecture
+- inventory architecture
+- networking/packet/opcode pipelines
+- startup XML/Lua registration chains
+
+This enables architecture-level reasoning in a single cognitive session when required.
+
+## Reflection Model Strategy
+
+Reflection should be split into two cost bands:
+
+### Cheap Reflection Pass (frequent)
+
+- stale knowledge detection
+- dependency drift
+- missing/broken references
+- context quality anomalies
+
+### Deep Reflection Pass (scheduled)
+
+- design inconsistency analysis
+- duplication and coupling risks
+- scaling bottlenecks
+- structural modernization opportunities
+
+## Multi-Embedding Strategy
+
+A single embedding strategy is useful for bootstrap, but retrieval quality improves with specialization:
+
+- code embeddings (C++, Lua, C#, XML, TS)
+- architecture embeddings (summaries, modules, ADR-like artifacts)
+- episodic embeddings (traces, failures, patches, reflection outcomes)
+
+This creates better semantic separation between implementation facts, architecture intent, and operational memory.
+
+## Cognitive Compression Pipeline
+
+Compression should become recursive and role-aware:
+
+```txt
+FILES
+ ↓
+MICRO SUMMARIES
+ ↓
+SYSTEM SUMMARIES
+ ↓
+ARCHITECTURE SUMMARIES
+ ↓
+GLOBAL COGNITION
+```
+
+Different compression stages can use different model roles and confidence policies.
+
+## Autonomous Evaluation Cluster (Cognitive CI/CD)
+
+The evaluation path can evolve from a single report endpoint to a multi-role quality chain:
+
+1. Executor model performs action plan.
+2. Critic model scores risk and side effects.
+3. Verifier model validates patch/results against intent.
+4. Reflection model updates memory and calibration hints.
+
+This forms a cognitive CI/CD loop for safer autonomous changes.
+
+## Tiered Runtime Blueprint
+
+### Tier 0 (Local)
+
+- indexing, watchers, cache, base retrieval, AST, fallback
+
+### Tier 1 (Cheap Cloud)
+
+- intent detection, tagging, reranking, lightweight summaries
+
+### Tier 2 (Mid Cloud)
+
+- coding, retrieval synthesis, architecture understanding, medium plans
+
+### Tier 3 (Heavy Reasoning)
+
+- orchestrator cognition, deep architecture reasoning, large context windows, reflection and redesign
+
+## Phase 6 Execution Priorities
+
+To implement this architecture safely, prioritize in order:
+
+1. role-based router contracts (classifier/planner/coder/critic/verifier)
+2. dynamic context window policy by intent and risk
+3. dual-pass reflection scheduler (cheap + deep)
+4. multi-embedding indexes with explicit store separation
+5. evaluator chain integration into orchestrator/action feedback loops
+
+This path prevents the common anti-pattern of relying on one giant model for every cognitive task.
+
 ## Repository Structure
 
 ```txt
@@ -235,6 +412,10 @@ Key variables:
 - `CHAT_AUTO_REINGEST_ON_WEAK_CONTEXT`
 - `CHAT_AUTO_REINGEST_MIN_SELECTED_CONTEXT`
 - `CHAT_AUTO_REINGEST_COOLDOWN_SECONDS`
+- `RETRIEVAL_CLOUD_ASSIST_ENABLED`
+- `RETRIEVAL_CLOUD_ASSIST_MODEL`
+- `RETRIEVAL_CLOUD_ASSIST_MIN_CANDIDATES`
+- `RETRIEVAL_CLOUD_ASSIST_TIMEOUT_SECONDS`
 - `ACTION_MODEL_ASSIST_ENABLED`
 - `ACTION_MODEL_ASSIST_TIER`
 - `ACTION_BLOCKED_PATHS`

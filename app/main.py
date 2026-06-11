@@ -131,16 +131,6 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
             cache_file=settings.alibaba_embedding_cache_file,
         )
 
-    context_builder = ContextBuilder(
-        memory_repository=memory_repository,
-        knowledge_compiler=knowledge_compiler,
-        project_artifacts_root=settings.data_dir.parent / ".brasa",
-        embedding_client=embedding_client,
-        auto_reingest_on_weak_context=settings.chat_auto_reingest_on_weak_context,
-        auto_reingest_min_selected_context=settings.chat_auto_reingest_min_selected_context,
-        auto_reingest_cooldown_seconds=settings.chat_auto_reingest_cooldown_seconds,
-    )
-
     local_provider = LocalAdapter(model_name=settings.local_model_name)
     alibaba_provider = AlibabaAdapter(
         api_key=settings.alibaba_api_key,
@@ -153,6 +143,24 @@ def build_runtime(settings: Settings) -> RuntimeContainer:
         or None,
         max_retries=settings.alibaba_max_retries,
         retry_backoff_seconds=settings.alibaba_retry_backoff_seconds,
+    )
+
+    context_builder = ContextBuilder(
+        memory_repository=memory_repository,
+        knowledge_compiler=knowledge_compiler,
+        project_artifacts_root=settings.data_dir.parent / ".brasa",
+        embedding_client=embedding_client,
+        retrieval_assist_provider=alibaba_provider,
+        retrieval_assist_enabled=settings.retrieval_cloud_assist_enabled,
+        retrieval_assist_model_name=(
+            settings.retrieval_cloud_assist_model.strip()
+            or settings.alibaba_model_flash
+        ),
+        retrieval_assist_min_candidates=settings.retrieval_cloud_assist_min_candidates,
+        retrieval_assist_timeout_seconds=settings.retrieval_cloud_assist_timeout_seconds,
+        auto_reingest_on_weak_context=settings.chat_auto_reingest_on_weak_context,
+        auto_reingest_min_selected_context=settings.chat_auto_reingest_min_selected_context,
+        auto_reingest_cooldown_seconds=settings.chat_auto_reingest_cooldown_seconds,
     )
     router = AIRouter(
         settings=settings,

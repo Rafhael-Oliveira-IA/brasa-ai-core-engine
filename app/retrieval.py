@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 from app.contracts import ContextPacket, ContextSnippet, RequestEnvelope, RetrievalResult
 from app.calibration.profiles import CalibrationProfileRegistry
 from app.knowledge.graph_engine import KnowledgeGraphEngine
 from app.memory.repository import MemoryRepository
+from app.providers.base import BaseProvider, ProviderFailure, ProviderUnavailable
 from app.workspace import resolve_project_root, split_scoped_project_id
 
 
@@ -226,6 +230,21 @@ ACTION_BIND_TERMS = {
     "g_actions->loadfromxml",
 }
 
+ITEM_LOOT_TERMS = {
+    "loot",
+    "drop",
+    "drops",
+    "dropa",
+    "dropar",
+    "drop table",
+    "drop chance",
+    "heart stone",
+    "fire stone",
+    "stone",
+    "pedra",
+    "item drop",
+}
+
 DEPENDENCY_NOISE_PREFIXES = (
     "symbol:",
     "app.",
@@ -319,12 +338,22 @@ class ContextRetrievalEngine:
         max_chars: int = 3500,
         knowledge_compiler: object | None = None,
         embedding_client: object | None = None,
+        retrieval_assist_provider: BaseProvider | None = None,
+        retrieval_assist_enabled: bool = False,
+        retrieval_assist_model_name: str = "qwen-turbo-latest",
+        retrieval_assist_min_candidates: int = 8,
+        retrieval_assist_timeout_seconds: float = 12.0,
     ) -> None:
         self.memory_repository = memory_repository
         self.project_artifacts_root = project_artifacts_root
         self.max_chars = max_chars
         self.knowledge_compiler = knowledge_compiler
         self.embedding_client = embedding_client
+        self.retrieval_assist_provider = retrieval_assist_provider
+        self.retrieval_assist_enabled = retrieval_assist_enabled
+        self.retrieval_assist_model_name = retrieval_assist_model_name
+        self.retrieval_assist_min_candidates = max(1, int(retrieval_assist_min_candidates))
+        self.retrieval_assist_timeout_seconds = max(2.0, float(retrieval_assist_timeout_seconds))
         self.profile_registry = CalibrationProfileRegistry()
         self.graph_engine = KnowledgeGraphEngine(project_artifacts_root=self.project_artifacts_root)
 
@@ -362,6 +391,16 @@ class ContextRetrievalEngine:
             prompt=envelope.prompt,
         )
         candidates.extend(artifact_candidates)
+
+        cloud_assist = self._cloud_retrieval_assist(
+            prompt=envelope.prompt,
+            candidates=candidates,
+        )
+        if cloud_assist.get("enabled") and cloud_assist.get("status") == "ok":
+            self._apply_cloud_retrieval_hints(
+                candidates=candidates,
+                hints=cloud_assist,
+            )
 
         semantic_info = self._apply_semantic_scores(
             prompt=envelope.prompt,
@@ -463,6 +502,7 @@ class ContextRetrievalEngine:
             "cold_knowledge": cold_knowledge,
             "compression": compression_payload,
             "semantic_retrieval": semantic_info,
+            "cloud_retrieval_assist": cloud_assist,
             # Backward compatible aliases for existing callers/tests.
             "contexts": context_packet,
             "memories": [entry.id for entry in memories],
@@ -502,6 +542,227 @@ class ContextRetrievalEngine:
             )
 
         return candidates
+
+    def _cloud_retrieval_assist(
+        self,
+        *,
+        prompt: str,
+        candidates: list[RetrievalCandidate],
+    ) -> dict[str, Any]:
+        if not self.retrieval_assist_enabled:
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "retrieval_assist_disabled",
+            }
+
+        if self.retrieval_assist_provider is None:
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "provider_unavailable",
+            }
+
+        artifact_candidates = [item for item in candidates if item.source.startswith("artifact:file:")]
+        if len(artifact_candidates) < self.retrieval_assist_min_candidates:
+            return {
+                "enabled": True,
+                "status": "skipped",
+                "reason": "insufficient_candidates",
+                "candidate_count": len(artifact_candidates),
+            }
+
+        ranked = sorted(
+            artifact_candidates,
+            key=lambda item: (item.relevance_score, item.importance_score, item.freshness_score),
+            reverse=True,
+        )
+        scope_candidates = ranked[:20]
+        candidate_paths = [item.source.removeprefix("artifact:file:") for item in scope_candidates]
+
+        assist_prompt = (
+            "You are BRASA Retrieval Assistant.\n"
+            "Given the user query and candidate file paths, return ONLY valid JSON with this schema:\n"
+            "{\n"
+            '  "priority_sources": ["relative/path.ext"],\n'
+            '  "include_terms": ["term"],\n'
+            '  "intent": "string"\n'
+            "}\n"
+            "Rules:\n"
+            "- Choose up to 6 priority_sources from the provided candidates only.\n"
+            "- include_terms must be short lexical hints useful for retrieval scoring.\n"
+            "- Do not output markdown.\n\n"
+            f"User query:\n{prompt}\n\n"
+            f"Candidate sources:\n{json.dumps(candidate_paths, ensure_ascii=True, indent=2)}"
+        )
+
+        snippets = [
+            ContextSnippet(
+                source=item.source,
+                content=item.content[:220],
+                score=item.final_score,
+            )
+            for item in scope_candidates[:6]
+        ]
+        assist_context = ContextPacket(
+            snippets=snippets,
+            provenance=[item.source for item in snippets],
+        )
+
+        try:
+            response = self._run_retrieval_assist_sync(
+                prompt=assist_prompt,
+                context=assist_context,
+                model_name=self.retrieval_assist_model_name,
+            )
+        except (ProviderUnavailable, ProviderFailure) as exc:
+            return {
+                "enabled": True,
+                "status": "unavailable",
+                "reason": str(exc),
+                "candidate_count": len(artifact_candidates),
+            }
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "status": "failed",
+                "reason": str(exc),
+                "candidate_count": len(artifact_candidates),
+            }
+
+        payload = self._extract_json_payload(response.answer)
+        if payload is None:
+            return {
+                "enabled": True,
+                "status": "invalid_response",
+                "candidate_count": len(artifact_candidates),
+            }
+
+        raw_sources = payload.get("priority_sources", [])
+        priority_sources = []
+        if isinstance(raw_sources, list):
+            valid_sources = set(candidate_paths)
+            for item in raw_sources:
+                value = str(item).strip().replace("\\", "/")
+                if value and value in valid_sources and value not in priority_sources:
+                    priority_sources.append(value)
+                if len(priority_sources) >= 6:
+                    break
+
+        raw_terms = payload.get("include_terms", [])
+        include_terms = []
+        if isinstance(raw_terms, list):
+            for item in raw_terms:
+                value = str(item).strip().lower()
+                if len(value) >= 2 and value not in include_terms:
+                    include_terms.append(value)
+                if len(include_terms) >= 20:
+                    break
+
+        return {
+            "enabled": True,
+            "status": "ok",
+            "model": self.retrieval_assist_model_name,
+            "candidate_count": len(artifact_candidates),
+            "priority_sources": priority_sources,
+            "include_terms": include_terms,
+            "intent": str(payload.get("intent") or "").strip(),
+        }
+
+    def _run_retrieval_assist_sync(
+        self,
+        *,
+        prompt: str,
+        context: ContextPacket,
+        model_name: str,
+    ) -> ProviderResponse:
+        if self.retrieval_assist_provider is None:
+            raise ProviderUnavailable("retrieval_assist_provider is not configured")
+
+        def _invoke() -> ProviderResponse:
+            return asyncio.run(
+                self.retrieval_assist_provider.generate(
+                    prompt=prompt,
+                    context=context,
+                    model_name=model_name,
+                )
+            )
+
+        try:
+            return _invoke()
+        except RuntimeError:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_invoke)
+                return future.result(timeout=self.retrieval_assist_timeout_seconds)
+
+    def _extract_json_payload(self, text: str) -> dict[str, Any] | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\\s*", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\\s*```$", "", raw).strip()
+
+        parsed = self._try_parse_json(raw)
+        if parsed is not None:
+            return parsed
+
+        first = raw.find("{")
+        last = raw.rfind("}")
+        if first >= 0 and last > first:
+            return self._try_parse_json(raw[first : last + 1])
+
+        return None
+
+    def _try_parse_json(self, text: str) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def _apply_cloud_retrieval_hints(
+        self,
+        *,
+        candidates: list[RetrievalCandidate],
+        hints: dict[str, Any],
+    ) -> None:
+        raw_priority_sources = hints.get("priority_sources", [])
+        priority_sources = set()
+        if isinstance(raw_priority_sources, list):
+            priority_sources = {
+                f"artifact:file:{str(item).strip().replace('\\\\', '/')}"
+                for item in raw_priority_sources
+                if str(item).strip()
+            }
+
+        raw_terms = hints.get("include_terms", [])
+        include_terms = {
+            str(item).strip().lower()
+            for item in raw_terms
+            if isinstance(raw_terms, list) and str(item).strip()
+        }
+
+        boosted = 0
+        for candidate in candidates:
+            if candidate.source in priority_sources:
+                candidate.relevance_score = max(candidate.relevance_score, 1.00)
+                candidate.importance_score = max(candidate.importance_score, 1.00)
+                candidate.confidence_score = max(candidate.confidence_score, 0.98)
+                boosted += 1
+
+            if include_terms:
+                query_space = " ".join(
+                    [candidate.source, candidate.content, " ".join(candidate.dependencies)]
+                ).lower()
+                term_boost = self._text_relevance(query_space, include_terms)
+                if term_boost > 0.0:
+                    candidate.relevance_score = max(candidate.relevance_score, min(1.0, term_boost * 0.95))
+
+        hints["applied_priority_boosts"] = boosted
 
     def _apply_semantic_scores(
         self,
@@ -759,6 +1020,7 @@ class ContextRetrievalEngine:
         action_focus = self._contains_any(prompt_lower, ACTION_XML_TERMS | ACTION_REVSCRIPTS_TERMS | ACTION_BIND_TERMS)
         revscripts_focus = self._contains_any(prompt_lower, ACTION_REVSCRIPTS_TERMS)
         xml_focus = "xml" in prompt_lower or self._contains_any(prompt_lower, ACTION_XML_TERMS | CLASSIC_SCRIPT_TERMS)
+        item_loot_focus = self._is_item_loot_focused_prompt(prompt_lower)
         architecture_focus = any(term in prompt_lower for term in ARCHITECTURE_TERMS) or classic_focus or runtime_focus
 
         if "/src/" in normalized:
@@ -837,6 +1099,21 @@ class ContextRetrievalEngine:
             bonus += 0.08
         if "quest" in prompt_lower and "/src/quests" in normalized:
             bonus += 0.10
+
+        if item_loot_focus:
+            if normalized.endswith("/data/items/items.xml/"):
+                bonus += 0.42
+            elif "/data/items/" in normalized and extension == ".xml":
+                bonus += 0.28
+
+            if ("/data/monster/" in normalized or "/data/monsters/" in normalized) and extension == ".xml":
+                bonus += 0.18
+
+            if "/loot/" in normalized:
+                bonus += 0.16
+
+            if "/data/scripts/" in normalized and ("loot" in normalized or "drop" in normalized):
+                bonus += 0.12
 
         if profile is not None:
             bonus += float(getattr(profile, "xml_boost", 0.0)) if extension == ".xml" else 0.0
@@ -1009,26 +1286,72 @@ class ContextRetrievalEngine:
             if xml_candidate is None:
                 xml_candidate = next((item for item in candidates if self._is_xml_artifact_candidate(item)), None)
             if xml_candidate is not None:
-                while True:
-                    fitted = self._fit_candidate_with_budget(
-                        candidate=xml_candidate,
-                        remaining=self.max_chars - running,
-                        min_truncate_chars=min_truncate_chars,
-                    )
-                    if fitted is not None:
-                        selected.append(fitted)
-                        running += len(fitted.content)
-                        break
+                running = self._force_candidate_with_budget(
+                    selected=selected,
+                    dropped=dropped,
+                    candidate=xml_candidate,
+                    running=running,
+                    min_truncate_chars=min_truncate_chars,
+                )
 
-                    if not selected:
-                        dropped.append(xml_candidate)
-                        break
+        item_loot_focus = self._is_item_loot_focused_prompt(prompt)
+        has_item_loot = any(self._is_item_loot_artifact_candidate(item) for item in selected)
+        has_items_xml = any(self._is_items_xml_candidate(item) for item in selected)
 
-                    removed = selected.pop()
-                    running = max(0, running - len(removed.content))
-                    dropped.append(removed)
+        forced_candidates: list[RetrievalCandidate] = []
+        if item_loot_focus and not has_items_xml:
+            items_xml_candidate = next((item for item in candidates if self._is_items_xml_candidate(item)), None)
+            if items_xml_candidate is not None:
+                forced_candidates.append(items_xml_candidate)
+
+        if item_loot_focus and not has_item_loot:
+            item_loot_candidate = next((item for item in candidates if self._is_item_loot_artifact_candidate(item)), None)
+            if item_loot_candidate is not None and all(
+                item_loot_candidate.source != existing.source for existing in forced_candidates
+            ):
+                forced_candidates.append(item_loot_candidate)
+
+        for candidate in forced_candidates:
+            running = self._force_candidate_with_budget(
+                selected=selected,
+                dropped=dropped,
+                candidate=candidate,
+                running=running,
+                min_truncate_chars=min_truncate_chars,
+            )
 
         return selected, dropped
+
+    def _force_candidate_with_budget(
+        self,
+        *,
+        selected: list[RetrievalCandidate],
+        dropped: list[RetrievalCandidate],
+        candidate: RetrievalCandidate,
+        running: int,
+        min_truncate_chars: int,
+    ) -> int:
+        if any(item.source == candidate.source for item in selected):
+            return running
+
+        while True:
+            fitted = self._fit_candidate_with_budget(
+                candidate=candidate,
+                remaining=self.max_chars - running,
+                min_truncate_chars=min_truncate_chars,
+            )
+            if fitted is not None:
+                selected.append(fitted)
+                running += len(fitted.content)
+                return running
+
+            if not selected:
+                dropped.append(candidate)
+                return running
+
+            removed = selected.pop()
+            running = max(0, running - len(removed.content))
+            dropped.append(removed)
 
     def _fit_candidate_with_budget(
         self,
@@ -1055,8 +1378,49 @@ class ContextRetrievalEngine:
         lower = (prompt or "").lower()
         return ".xml" in lower or " xml" in lower or lower.startswith("xml")
 
+    def _is_item_loot_focused_prompt(self, prompt: str | None) -> bool:
+        lower = (prompt or "").lower()
+        if "items.xml" in lower:
+            return True
+
+        has_loot_terms = any(term in lower for term in ITEM_LOOT_TERMS)
+        if has_loot_terms:
+            return True
+
+        has_item_term = any(term in lower for term in {" item", "items", "itens", "stone", "pedra"})
+        has_drop_like = any(term in lower for term in {"drop", "loot", "dropar", "dropa"})
+        return has_item_term and has_drop_like
+
     def _is_xml_artifact_candidate(self, candidate: RetrievalCandidate) -> bool:
         return candidate.source.startswith("artifact:file:") and candidate.source.lower().endswith(".xml")
+
+    def _is_items_xml_candidate(self, candidate: RetrievalCandidate) -> bool:
+        if not candidate.source.startswith("artifact:file:"):
+            return False
+        source_lower = candidate.source.lower().replace("\\", "/")
+        return source_lower.endswith("artifact:file:data/items/items.xml")
+
+    def _is_item_loot_artifact_candidate(self, candidate: RetrievalCandidate) -> bool:
+        if not candidate.source.startswith("artifact:file:"):
+            return False
+
+        source_lower = candidate.source.lower().replace("\\", "/")
+        if self._is_items_xml_candidate(candidate):
+            return True
+
+        if "/data/items/" in source_lower and source_lower.endswith(".xml"):
+            return True
+
+        if "/loot/" in source_lower:
+            return True
+
+        if ("/data/monster/" in source_lower or "/data/monsters/" in source_lower) and source_lower.endswith(".xml"):
+            return True
+
+        if "/data/scripts/" in source_lower and ("loot" in source_lower or "drop" in source_lower):
+            return True
+
+        return False
 
     def _matches_xml_filename_term(self, candidate: RetrievalCandidate, xml_terms: set[str]) -> bool:
         if not xml_terms:
@@ -1089,6 +1453,11 @@ class ContextRetrievalEngine:
         if self._is_xml_focused_prompt(prompt) and not any(self._is_xml_artifact_candidate(item) for item in selected):
             risks.append("xml_missing: XML-focused query without XML artifact in selected context.")
             risks.append("ranking_collision: non-XML candidates dominated XML-focused prompt.")
+
+        if self._is_item_loot_focused_prompt(prompt) and not any(
+            self._is_item_loot_artifact_candidate(item) for item in selected
+        ):
+            risks.append("item_context_missing: item/loot-focused query without item or loot artifact in selected context.")
 
         low_confidence = [item for item in selected if item.confidence_score < 0.50]
         if low_confidence:

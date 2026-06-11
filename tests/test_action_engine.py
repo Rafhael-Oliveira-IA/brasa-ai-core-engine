@@ -112,6 +112,80 @@ class StubCatchRateContextBuilder:
         return packet, retrieval
 
 
+class StubLootDropContextBuilder:
+    def build(self, envelope):
+        packet = ContextPacket(
+            provenance=[
+                "artifact:file:data/actions/scripts/poke/catch.lua",
+                "artifact:file:data/monster/arcanine.lua",
+                "artifact:file:data/items/items.xml",
+            ]
+        )
+        retrieval = RetrievalResult(
+            query=envelope.prompt,
+            entries=[],
+            took_ms=5,
+            assembled={
+                "user_intent": "generation",
+                "relevant_systems": ["Pokemon", "Loot"],
+                "dependencies": ["monsterDrops", "items"],
+                "risks": [],
+                "context_packet": [
+                    {
+                        "source": "artifact:file:data/actions/scripts/poke/catch.lua",
+                        "type": "artifact",
+                        "score": 0.96,
+                    },
+                    {
+                        "source": "artifact:file:data/monster/arcanine.lua",
+                        "type": "artifact",
+                        "score": 0.92,
+                    },
+                    {
+                        "source": "artifact:file:data/items/items.xml",
+                        "type": "artifact",
+                        "score": 0.88,
+                    },
+                ],
+            },
+        )
+        return packet, retrieval
+
+
+class StubLootItemsContextBuilder:
+    def build(self, envelope):
+        packet = ContextPacket(
+            provenance=[
+                "artifact:file:data/actions/scripts/poke/catch.lua",
+                "artifact:file:data/items/items.xml",
+            ]
+        )
+        retrieval = RetrievalResult(
+            query=envelope.prompt,
+            entries=[],
+            took_ms=5,
+            assembled={
+                "user_intent": "generation",
+                "relevant_systems": ["Pokemon", "Loot"],
+                "dependencies": ["items"],
+                "risks": [],
+                "context_packet": [
+                    {
+                        "source": "artifact:file:data/actions/scripts/poke/catch.lua",
+                        "type": "artifact",
+                        "score": 0.97,
+                    },
+                    {
+                        "source": "artifact:file:data/items/items.xml",
+                        "type": "artifact",
+                        "score": 0.89,
+                    },
+                ],
+            },
+        )
+        return packet, retrieval
+
+
 class StubModelAssistRouter:
     def __init__(self) -> None:
         self.calls = 0
@@ -377,6 +451,210 @@ def test_action_planner_repairs_non_matching_model_patch_for_catch_rate() -> Non
         assert report.failed == 0
         updated = catch_file.read_text(encoding="utf-8")
         assert "chance = chance + 2" in updated
+
+
+def test_action_planner_prioritizes_loot_drop_target_and_applies_non_empty_patch_e2e() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        catch_file = root / "data" / "actions" / "scripts" / "poke" / "catch.lua"
+        monster_file = root / "data" / "monster" / "arcanine.lua"
+        items_file = root / "data" / "items" / "items.xml"
+
+        catch_file.parent.mkdir(parents=True, exist_ok=True)
+        monster_file.parent.mkdir(parents=True, exist_ok=True)
+        items_file.parent.mkdir(parents=True, exist_ok=True)
+
+        catch_file.write_text(
+            "local chance = chanceBase * balls[ballKey].chanceMultiplier\n",
+            encoding="utf-8",
+        )
+        monster_file.write_text(
+            (
+                "local drops = {\n"
+                "    {name = \"heart stone\", chance = 4500},\n"
+                "}\n"
+            ),
+            encoding="utf-8",
+        )
+        items_file.write_text("<items/>\n", encoding="utf-8")
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = CognitiveActionEngine(
+            context_builder=StubLootDropContextBuilder(),
+            memory_repository=repository,
+            workspace_root=root,
+            backup_root=root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+        )
+
+        prompt = "confere 3 arquivos e adiciona fire stone no loot/drop do arcanine sem mexer no catch"
+        plan, _ = engine.plan(
+            ActionPlanRequest(
+                project_id="MMO",
+                user_id="u1",
+                prompt=prompt,
+            )
+        )
+
+        assert len(plan.actions) == 1
+        action = plan.actions[0]
+        assert action.target == "data/monster/arcanine.lua"
+        assert action.type == ActionType.PATCH_FILE
+        assert action.patches
+
+        report = engine.execute(
+            ActionExecuteRequest(
+                project_id="MMO",
+                user_id="u1",
+                plan=plan,
+                options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+            )
+        )
+
+        assert report.applied == 1
+        assert report.failed == 0
+
+        updated_monster = monster_file.read_text(encoding="utf-8")
+        assert "heart stone" in updated_monster
+        assert "fire stone" in updated_monster
+
+        unchanged_catch = catch_file.read_text(encoding="utf-8")
+        assert "fire stone" not in unchanged_catch
+
+
+def test_action_planner_loot_drop_prompt_variants_remain_stable_e2e() -> None:
+    prompts = [
+        "confere 3 arquivos e adicionar o loot correto do arcanine",
+        "ajusta o drop do arcanine para incluir fire stone junto com heart stone",
+        "pode dropar fire stone no loot do arcanine sem mexer no catch",
+    ]
+
+    for prompt in prompts:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            catch_file = root / "data" / "actions" / "scripts" / "poke" / "catch.lua"
+            monster_file = root / "data" / "monster" / "arcanine.lua"
+
+            catch_file.parent.mkdir(parents=True, exist_ok=True)
+            monster_file.parent.mkdir(parents=True, exist_ok=True)
+
+            catch_file.write_text(
+                "local chance = chanceBase * balls[ballKey].chanceMultiplier\n",
+                encoding="utf-8",
+            )
+            monster_file.write_text(
+                (
+                    "local drops = {\n"
+                    "    {name = \"heart stone\", chance = 4500},\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            repository = MemoryRepository(root / "memory.db")
+            engine = CognitiveActionEngine(
+                context_builder=StubLootDropContextBuilder(),
+                memory_repository=repository,
+                workspace_root=root,
+                backup_root=root / ".backups",
+                blocked_path_prefixes=(".git", ".brasa"),
+                allow_delete=False,
+                max_file_bytes=200000,
+            )
+
+            plan, _ = engine.plan(
+                ActionPlanRequest(
+                    project_id="MMO",
+                    user_id="u1",
+                    prompt=prompt,
+                )
+            )
+
+            assert len(plan.actions) == 1
+            action = plan.actions[0]
+            assert action.target == "data/monster/arcanine.lua"
+            assert action.type == ActionType.PATCH_FILE
+            assert action.patches
+
+            report = engine.execute(
+                ActionExecuteRequest(
+                    project_id="MMO",
+                    user_id="u1",
+                    plan=plan,
+                    options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+                )
+            )
+
+            assert report.applied == 1
+            assert report.failed == 0
+            updated_monster = monster_file.read_text(encoding="utf-8")
+            assert "heart stone" in updated_monster
+            assert "fire stone" in updated_monster
+            unchanged_catch = catch_file.read_text(encoding="utf-8")
+            assert "fire stone" not in unchanged_catch
+
+
+def test_action_planner_loot_drop_falls_back_to_items_xml_when_monster_missing_e2e() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        catch_file = root / "data" / "actions" / "scripts" / "poke" / "catch.lua"
+        items_file = root / "data" / "items" / "items.xml"
+
+        catch_file.parent.mkdir(parents=True, exist_ok=True)
+        items_file.parent.mkdir(parents=True, exist_ok=True)
+
+        catch_file.write_text(
+            "local chance = chanceBase * balls[ballKey].chanceMultiplier\n",
+            encoding="utf-8",
+        )
+        items_file.write_text(
+            "<item name=\"heart stone\" chance=\"4500\" />\n",
+            encoding="utf-8",
+        )
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = CognitiveActionEngine(
+            context_builder=StubLootItemsContextBuilder(),
+            memory_repository=repository,
+            workspace_root=root,
+            backup_root=root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+        )
+
+        plan, _ = engine.plan(
+            ActionPlanRequest(
+                project_id="MMO",
+                user_id="u1",
+                prompt="confere os arquivos e ajusta o loot correto para incluir fire stone",
+            )
+        )
+
+        assert len(plan.actions) == 1
+        action = plan.actions[0]
+        assert action.target == "data/items/items.xml"
+        assert action.type == ActionType.PATCH_FILE
+        assert action.patches
+
+        report = engine.execute(
+            ActionExecuteRequest(
+                project_id="MMO",
+                user_id="u1",
+                plan=plan,
+                options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+            )
+        )
+
+        assert report.applied == 1
+        assert report.failed == 0
+        updated_items = items_file.read_text(encoding="utf-8")
+        assert "heart stone" in updated_items
+        assert "fire stone" in updated_items
+        unchanged_catch = catch_file.read_text(encoding="utf-8")
+        assert "fire stone" not in unchanged_catch
 
 
 def test_action_executor_updates_file_and_rollback_restores_original_content() -> None:

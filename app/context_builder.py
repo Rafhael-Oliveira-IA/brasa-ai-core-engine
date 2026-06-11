@@ -20,6 +20,11 @@ class ContextBuilder:
         knowledge_compiler: KnowledgeCompiler | None = None,
         project_artifacts_root: Path | None = None,
         embedding_client: object | None = None,
+        retrieval_assist_provider: object | None = None,
+        retrieval_assist_enabled: bool = False,
+        retrieval_assist_model_name: str = "qwen-turbo-latest",
+        retrieval_assist_min_candidates: int = 8,
+        retrieval_assist_timeout_seconds: float = 12.0,
         auto_reingest_on_weak_context: bool = True,
         auto_reingest_min_selected_context: int = 2,
         auto_reingest_cooldown_seconds: int = 120,
@@ -39,6 +44,11 @@ class ContextBuilder:
             project_artifacts_root=self.project_artifacts_root,
             max_chars=self.max_chars,
             embedding_client=self.embedding_client,
+            retrieval_assist_provider=retrieval_assist_provider,
+            retrieval_assist_enabled=retrieval_assist_enabled,
+            retrieval_assist_model_name=retrieval_assist_model_name,
+            retrieval_assist_min_candidates=retrieval_assist_min_candidates,
+            retrieval_assist_timeout_seconds=retrieval_assist_timeout_seconds,
         )
 
     def build(self, envelope: RequestEnvelope) -> tuple[ContextPacket, RetrievalResult]:

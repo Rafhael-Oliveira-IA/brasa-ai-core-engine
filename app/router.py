@@ -130,6 +130,7 @@ class AIRouter:
         context: ContextPacket,
     ) -> tuple[ProviderResponse, RouteDecision]:
         require_alibaba_final = self._requires_alibaba_final_response(envelope)
+        model_role = self._resolve_model_role(envelope)
         provider_prompt = envelope.prompt
 
         if require_alibaba_final and self._is_chat_task(envelope):
@@ -171,7 +172,10 @@ class AIRouter:
                     last_reason = "budget cap reached before external provider"
                     break
 
-            provider, model_name = self._provider_and_model_for_tier(tier)
+            provider, model_name = self._provider_and_model_for_tier(
+                tier=tier,
+                model_role=model_role,
+            )
 
             try:
                 response = await provider.generate(
@@ -190,7 +194,7 @@ class AIRouter:
                 selected_tier=tier,
                 provider=provider.name,
                 model_name=model_name,
-                reason=f"confidence gate passed ({start_reason})",
+                reason=f"confidence gate passed ({start_reason}; role={model_role})",
                 escalation_depth=depth,
                 estimated_cost_usd=estimated_cost,
             )
@@ -335,17 +339,89 @@ class AIRouter:
         target = TIER_CONFIDENCE_TARGET[tier]
         return response.confidence < target
 
-    def _provider_and_model_for_tier(self, tier: ModelTier) -> tuple[BaseProvider, str]:
+    def _provider_and_model_for_tier(
+        self,
+        *,
+        tier: ModelTier,
+        model_role: str,
+    ) -> tuple[BaseProvider, str]:
         if tier == ModelTier.LOCAL:
             return self.local_provider, self.settings.local_model_name
 
+        return self.alibaba_provider, self._model_name_for_role(
+            tier=tier,
+            model_role=model_role,
+        )
+
+    def _model_name_for_role(self, *, tier: ModelTier, model_role: str) -> str:
+        role_models = {
+            "classification": self.settings.alibaba_model_classification,
+            "coding": self.settings.alibaba_model_coding,
+            "long_context": self.settings.alibaba_model_long_context,
+            "planning": self.settings.alibaba_model_planning,
+            "reflection": self.settings.alibaba_model_reflection,
+            "compression": self.settings.alibaba_model_compression,
+            "repair": self.settings.alibaba_model_repair,
+            "verifier": self.settings.alibaba_model_verifier,
+        }
+        configured = str(role_models.get(model_role, "")).strip()
+        if configured:
+            return configured
+        return self._default_model_name_for_tier(tier)
+
+    def _default_model_name_for_tier(self, tier: ModelTier) -> str:
         if tier == ModelTier.FLASH:
-            return self.alibaba_provider, self.settings.alibaba_model_flash
-
+            return self.settings.alibaba_model_flash
         if tier == ModelTier.PLUS:
-            return self.alibaba_provider, self.settings.alibaba_model_plus
+            return self.settings.alibaba_model_plus
+        return self.settings.alibaba_model_max
 
-        return self.alibaba_provider, self.settings.alibaba_model_max
+    def _resolve_model_role(self, envelope: RequestEnvelope) -> str:
+        metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+
+        allowed_roles = {
+            "default",
+            "classification",
+            "coding",
+            "long_context",
+            "planning",
+            "reflection",
+            "compression",
+            "repair",
+            "verifier",
+        }
+        explicit_role = str(metadata.get("model_role", "")).strip().lower()
+        if explicit_role in allowed_roles:
+            return explicit_role
+
+        if bool(metadata.get("require_verification", False)):
+            return "verifier"
+
+        task_type = str(metadata.get("task_type", "")).strip().lower()
+        task_role_map = {
+            "action_planning": "planning",
+            "planning": "planning",
+            "architecture": "long_context",
+            "reflection": "reflection",
+            "repair": "repair",
+            "summarize": "compression",
+            "debugging": "coding",
+            "generation": "coding",
+            "classification": "classification",
+            "verify": "verifier",
+        }
+        mapped = task_role_map.get(task_type)
+        if mapped is not None:
+            return mapped
+
+        retrieval = metadata.get("retrieval") if isinstance(metadata.get("retrieval"), dict) else {}
+        intent = str(retrieval.get("user_intent") or "").strip().lower()
+        if intent == "architecture":
+            return "long_context"
+        if intent in {"refactor", "debug"}:
+            return "coding"
+
+        return "default"
 
     def _tiers_from(self, starting_tier: ModelTier) -> list[ModelTier]:
         index = TIER_ORDER.index(starting_tier)

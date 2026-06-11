@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     alibaba_model_flash: str = "qwen-turbo-latest"
     alibaba_model_plus: str = "qwen-plus-latest"
     alibaba_model_max: str = "qwen-max-latest"
+    alibaba_model_classification: str = "qwen-turbo-latest"
+    alibaba_model_coding: str = "qwen-plus-latest"
+    alibaba_model_long_context: str = "qwen-max-latest"
+    alibaba_model_planning: str = "qwen-plus-latest"
+    alibaba_model_reflection: str = "qwen-plus-latest"
+    alibaba_model_compression: str = "qwen-turbo-latest"
+    alibaba_model_repair: str = "qwen-plus-latest"
+    alibaba_model_verifier: str = "qwen-plus-latest"
     alibaba_embedding_enabled: bool = True
     alibaba_embedding_model: str = "text-embedding-v4"
     alibaba_embedding_timeout_seconds: int = 25
@@ -69,6 +77,10 @@ class Settings(BaseSettings):
     chat_auto_reingest_on_weak_context: bool = True
     chat_auto_reingest_min_selected_context: int = 2
     chat_auto_reingest_cooldown_seconds: int = 120
+    retrieval_cloud_assist_enabled: bool = True
+    retrieval_cloud_assist_model: str = ""
+    retrieval_cloud_assist_min_candidates: int = 8
+    retrieval_cloud_assist_timeout_seconds: float = 12.0
 
     enable_reflection_scheduler: bool = False
     reflection_interval_minutes: int = 1440
