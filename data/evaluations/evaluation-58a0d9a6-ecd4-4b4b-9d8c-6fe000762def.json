@@ -1,0 +1,35 @@
+{
+  "report_id": "58a0d9a6-ecd4-4b4b-9d8c-6fe000762def",
+  "generated_at": "2026-06-08T18:33:05.957482Z",
+  "workspace_id": null,
+  "project_id": "mmo_workspace::SERVIDOR - ORIGINAL",
+  "user_id": "cognitive-user",
+  "sample_size": 77,
+  "retrieval_samples": 48,
+  "route_samples": 25,
+  "metrics": {
+    "retrieval_precision": 0.7433,
+    "hallucination_rate": 0.0,
+    "stale_context_rate": 0.0,
+    "architectural_consistency": 1.0,
+    "token_efficiency": 0.1373,
+    "reasoning_success": 1.0,
+    "feedback_correct_rate": 0.75,
+    "feedback_partial_rate": 0.25,
+    "feedback_incorrect_rate": 0.0,
+    "feedback_hallucination_rate": 0.0,
+    "feedback_xml_missing_rate": 0.0,
+    "feedback_retrieval_incorrect_rate": 0.0,
+    "feedback_compression_bad_rate": 0.25,
+    "feedback_architectural_loss_rate": 0.0
+  },
+  "totals": {
+    "total_cost_usd": 0.192393,
+    "prompt_tokens": 93027.0,
+    "completion_tokens": 44546.0,
+    "total_tokens": 137573.0
+  },
+  "notes": [
+    "Low token efficiency; context compression and ranking should be tuned."
+  ]
+}

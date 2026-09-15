@@ -18,7 +18,6 @@ MODEL_TOKEN_PRICING_USD_PER_1K: dict[str, tuple[float, float]] = {
 }
 
 RETRIABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
-MAX_CONTEXT_SNIPPETS = 8
 
 
 class AlibabaAdapter(BaseProvider):
@@ -55,7 +54,7 @@ class AlibabaAdapter(BaseProvider):
             raise ProviderUnavailable("Alibaba API key is not configured.")
 
         context_block = "\n\n".join(
-            f"[{snippet.source}]\n{snippet.content}" for snippet in context.snippets[:MAX_CONTEXT_SNIPPETS]
+            f"[{snippet.source}]\n{snippet.content}" for snippet in context.snippets
         )
         user_input = prompt if not context_block else f"Context:\n{context_block}\n\nRequest:\n{prompt}"
 

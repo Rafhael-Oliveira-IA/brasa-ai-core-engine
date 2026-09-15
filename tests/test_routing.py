@@ -56,6 +56,39 @@ class FailingProvider(BaseProvider):
         raise ProviderUnavailable("provider unavailable")
 
 
+class MultiModelChatProvider(BaseProvider):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls: list[str] = []
+
+    async def generate(self, *, prompt: str, context: ContextPacket, model_name: str) -> ProviderResponse:
+        self.calls.append(model_name)
+
+        if model_name == "qwen-classifier":
+            answer = '{"role":"coding","tier":"flash"}'
+            confidence = 0.91
+        elif model_name == "qwen-verifier":
+            answer = '{"verdict":"needs_repair","confidence":0.44,"issues":["missing source grounding"]}'
+            confidence = 0.89
+        elif model_name == "qwen-repair":
+            answer = "repaired final answer"
+            confidence = 0.93
+        else:
+            answer = "initial answer"
+            confidence = 0.88
+
+        return ProviderResponse(
+            answer=answer,
+            confidence=confidence,
+            provider=self.name,
+            model_name=model_name,
+            prompt_tokens=20,
+            completion_tokens=40,
+            total_tokens=60,
+            cost_usd=0.001,
+        )
+
+
 def build_settings(base_path: Path, *, budget: float = 0.20) -> Settings:
     return Settings(
         _env_file=None,
@@ -246,10 +279,15 @@ def test_router_chat_uses_local_draft_but_keeps_alibaba_as_final_response() -> N
         assert decision.provider == "alibaba"
         assert len(local_provider.prompts) == 1
         assert len(alibaba_provider.prompts) >= 1
-        assert "Local retrieval summary:" in alibaba_provider.prompts[0]
-        assert "Local draft (optional, may be incomplete):" in alibaba_provider.prompts[0]
-        assert "Output contract (mandatory):" in alibaba_provider.prompts[0]
-        assert "Do not invent formulas" in alibaba_provider.prompts[0]
+        final_chat_prompts = [
+            prompt
+            for prompt in alibaba_provider.prompts
+            if "Local draft (optional, may be incomplete):" in prompt
+        ]
+        assert final_chat_prompts
+        assert "Local retrieval summary:" in final_chat_prompts[0]
+        assert "Output contract (mandatory):" in final_chat_prompts[0]
+        assert "Do not invent formulas" in final_chat_prompts[0]
 
 
 def test_router_non_chat_alibaba_requirement_skips_chat_local_draft() -> None:
@@ -307,3 +345,139 @@ def test_router_chat_policy_does_not_fallback_to_local_when_alibaba_is_unavailab
             assert "external-chat-required" in str(exc)
         else:  # pragma: no cover
             raise AssertionError("expected ProviderUnavailable when Alibaba chat policy is enforced")
+
+
+def test_router_chat_large_context_starts_on_flash_for_cost_efficiency() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = build_settings(Path(temp_dir))
+        settings.chat_qwen_classification_enabled = False
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = StubProvider(name="alibaba", confidence=0.90)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        retrieval_context_packet = [
+            {"source": f"artifact:file:data/scripts/source_{index}.lua"}
+            for index in range(1, 20)
+        ]
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="quais os loots do arcanine?",
+            metadata={
+                "task_type": "chat",
+                "retrieval": {
+                    "user_intent": "general-query",
+                    "dependencies": ["loot", "drop"],
+                    "risks": [],
+                    "context_packet": retrieval_context_packet,
+                },
+            },
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert decision.selected_tier == ModelTier.FLASH
+
+
+def test_router_chat_multi_model_pipeline_uses_classifier_verifier_and_repair_models() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = Settings(
+            _env_file=None,
+            data_dir=Path(temp_dir) / "data",
+            sqlite_path=Path(temp_dir) / "data" / "memory.db",
+            trace_file=Path(temp_dir) / "data" / "traces.jsonl",
+            reflection_dir=Path(temp_dir) / "data" / "reflection_reports",
+            alibaba_api_key="test-key",
+            alibaba_model_flash="qwen-flash-default",
+            alibaba_model_coding="qwen-coding-specialized",
+            alibaba_model_classification="qwen-classifier",
+            alibaba_model_verifier="qwen-verifier",
+            alibaba_model_repair="qwen-repair",
+            chat_qwen_multi_model_enabled=True,
+            chat_qwen_classification_enabled=True,
+            chat_qwen_verifier_enabled=True,
+            chat_qwen_repair_enabled=True,
+        )
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = MultiModelChatProvider(name="alibaba")
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="quais os loots do arcanine?",
+            metadata={
+                "task_type": "chat",
+                "retrieval": {
+                    "user_intent": "general-query",
+                    "dependencies": ["loot", "drop"],
+                    "risks": [],
+                    "context_packet": [
+                        {"source": "artifact:file:data/monster/kanto/arcanine.lua"},
+                    ],
+                },
+            },
+        )
+
+        response, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.provider == "alibaba"
+        assert decision.selected_tier == ModelTier.FLASH
+        assert decision.model_name == "qwen-coding-specialized"
+        assert "chat_verifier=repair" in decision.reason
+        assert response.answer == "repaired final answer"
+        assert alibaba_provider.calls[:4] == [
+            "qwen-classifier",
+            "qwen-coding-specialized",
+            "qwen-verifier",
+            "qwen-repair",
+        ]
+
+
+def test_router_effective_tier_tracks_role_specific_model_family() -> None:
+    with TemporaryDirectory() as temp_dir:
+        settings = Settings(
+            _env_file=None,
+            data_dir=Path(temp_dir) / "data",
+            sqlite_path=Path(temp_dir) / "data" / "memory.db",
+            trace_file=Path(temp_dir) / "data" / "traces.jsonl",
+            reflection_dir=Path(temp_dir) / "data" / "reflection_reports",
+            alibaba_api_key="test-key",
+            alibaba_model_flash="qwen3.6-flash",
+            alibaba_model_coding="qwen-plus-latest",
+        )
+        local_provider = StubProvider(name="local", confidence=0.99)
+        alibaba_provider = StubProvider(name="alibaba", confidence=0.90)
+
+        router = AIRouter(
+            settings=settings,
+            local_provider=local_provider,
+            alibaba_provider=alibaba_provider,
+        )
+
+        envelope = RequestEnvelope(
+            project_id="project-1",
+            user_id="user-1",
+            prompt="quais os loots do arcanine?",
+            metadata={
+                "task_type": "chat",
+                "model_role": "coding",
+            },
+        )
+
+        _, decision = asyncio.run(router.generate(envelope=envelope, context=ContextPacket()))
+
+        assert decision.model_name == "qwen-plus-latest"
+        assert decision.selected_tier == ModelTier.PLUS

@@ -43,6 +43,18 @@ EXCLUDED_DIRS = {
     ".brasa",
 }
 
+EXCLUDED_RELATIVE_PREFIXES = {
+    "data/knowledge/",
+    "data/evaluations/",
+    "data/reflection_reports/",
+    "app-front/dist/",
+}
+
+EXCLUDED_RELATIVE_FILES = {
+    "data/traces.jsonl",
+    "data/memory.db",
+}
+
 LANGUAGE_BY_EXTENSION = {
     ".py": "python",
     ".lua": "lua",
@@ -150,4 +162,13 @@ class ProjectScanner:
 
     def _is_excluded(self, project_root: Path, file_path: Path) -> bool:
         relative = file_path.relative_to(project_root)
-        return any(part in EXCLUDED_DIRS for part in relative.parts)
+        if any(part in EXCLUDED_DIRS for part in relative.parts):
+            return True
+
+        normalized = relative.as_posix().lower()
+        if normalized in EXCLUDED_RELATIVE_FILES:
+            return True
+        if any(normalized.startswith(prefix) for prefix in EXCLUDED_RELATIVE_PREFIXES):
+            return True
+
+        return False

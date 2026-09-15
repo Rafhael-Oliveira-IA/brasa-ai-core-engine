@@ -77,6 +77,168 @@ export interface ChatResponse {
   context_sources: string[];
 }
 
+export type ConversationMessageRole = "user" | "assistant" | "system";
+
+export interface ConversationSession {
+  session_id: string;
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  title: string;
+  metadata: Record<string, unknown>;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  last_message_at?: string | null;
+}
+
+export interface ConversationSessionCreateRequest {
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConversationMessage {
+  message_id: string;
+  session_id: string;
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  role: ConversationMessageRole;
+  content: string;
+  request_id?: string | null;
+  trace_id?: string | null;
+  route?: {
+    provider: string;
+    model_name: string;
+    reason: string;
+    selected_tier: ModelTier;
+    estimated_cost_usd: number;
+  } | null;
+  context_sources: string[];
+  confidence?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ConversationSendRequest {
+  workspace_id: string;
+  project_id: string;
+  user_id: string;
+  prompt: string;
+  command?: string;
+  options?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConversationTaskResponse {
+  task_id: string;
+  task_type: string;
+  answer: string;
+  confidence: number;
+  route: {
+    provider: string;
+    model_name: string;
+    reason: string;
+    selected_tier: ModelTier;
+    estimated_cost_usd: number;
+  };
+  context_sources: string[];
+  trace_id: string;
+}
+
+export interface ConversationSendResponse {
+  session: ConversationSession;
+  user_message: ConversationMessage;
+  assistant_message: ConversationMessage;
+  task?: ConversationTaskResponse | null;
+  operation: string;
+  operation_result: Record<string, unknown>;
+}
+
+export interface ConversationSessionSearchResponse {
+  items: ConversationSession[];
+}
+
+export interface ConversationMessageSearchResponse {
+  items: ConversationMessage[];
+}
+
+export type KnowledgeLevel = "file" | "folder" | "module" | "project" | "global";
+
+export interface KnowledgeNodeView {
+  node_id: string;
+  level: KnowledgeLevel;
+  title: string;
+  source_path: string;
+  stale: boolean;
+  confidence: number;
+  generation: number;
+  dependencies: string[];
+  patterns: string[];
+  children: string[];
+  readme_path: string;
+  metadata_path: string;
+}
+
+export interface KnowledgeTreeResponse {
+  generated_at: string;
+  nodes: KnowledgeNodeView[];
+  stale_nodes: number;
+}
+
+export interface WorkspaceFileContentResponse {
+  path: string;
+  exists: boolean;
+  content: string;
+  truncated: boolean;
+  size_bytes: number;
+  encoding: string;
+}
+
+export interface ProjectArtifactsTreeResponse {
+  workspace_id: string;
+  project_id: string;
+  scoped_project_id: string;
+  artifacts_root: string;
+  ingested: boolean;
+  source_project_path?: string | null;
+  file_count: number;
+  files: string[];
+  notes: string[];
+}
+
+export interface ProjectArtifactFileContentResponse {
+  workspace_id: string;
+  project_id: string;
+  scoped_project_id: string;
+  path: string;
+  exists: boolean;
+  content: string;
+  truncated: boolean;
+  size_bytes: number;
+  encoding: string;
+  source: string;
+}
+
+export interface ProjectIngestionReport {
+  workspace_id?: string | null;
+  project_name: string;
+  project_path: string;
+  output_path: string;
+  scanned_files: number;
+  changed_files: number;
+  removed_files: number;
+  generated_file_summaries: number;
+  generated_folder_summaries: number;
+  generated_project_summary: boolean;
+  project_type: string;
+  engine: string;
+  notes: string[];
+}
+
 export type FeedbackVerdict = "correct" | "partial" | "incorrect";
 
 export type FeedbackIssue =

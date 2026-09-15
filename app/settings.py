@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     request_budget_usd: float = 0.20
     chat_force_alibaba_response: bool = True
     chat_force_alibaba_ignore_budget: bool = True
+    chat_context_max_chars: int = 12000
+    chat_qwen_multi_model_enabled: bool = True
+    chat_qwen_classification_enabled: bool = True
+    chat_qwen_verifier_enabled: bool = True
+    chat_qwen_repair_enabled: bool = True
+    chat_qwen_verifier_min_confidence: float = 0.65
     chat_local_assist_enabled: bool = True
     chat_local_assist_max_chars: int = 1400
     chat_auto_reingest_on_weak_context: bool = True

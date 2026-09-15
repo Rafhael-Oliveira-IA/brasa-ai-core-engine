@@ -6,12 +6,23 @@ import {
   ActionRollbackReport,
   ActionRollbackRequest,
   ChatResponse,
+  ConversationMessageSearchResponse,
+  ConversationSendRequest,
+  ConversationSendResponse,
+  ConversationSession,
+  ConversationSessionCreateRequest,
+  ConversationSessionSearchResponse,
   ContextAssembleResponse,
   CognitiveFeedbackCreateRequest,
   DiagnosticsResponse,
+  KnowledgeTreeResponse,
   OrchestratorRunReport,
   OrchestratorRunRequest,
+  ProjectArtifactFileContentResponse,
+  ProjectArtifactsTreeResponse,
+  ProjectIngestionReport,
   RequestEnvelope,
+  WorkspaceFileContentResponse,
 } from "./types";
 
 const API_BASE =
@@ -45,6 +56,125 @@ export async function askChat(payload: RequestEnvelope): Promise<ChatResponse> {
   return requestJson<ChatResponse>("/v1/chat", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function createConversationSession(
+  payload: ConversationSessionCreateRequest,
+): Promise<ConversationSession> {
+  return requestJson<ConversationSession>("/v1/conversations/sessions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listConversationSessions(
+  workspaceId: string,
+  projectId: string,
+  userId: string,
+  limit = 40,
+): Promise<ConversationSessionSearchResponse> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    user_id: userId,
+    limit: String(limit),
+  });
+  return requestJson<ConversationSessionSearchResponse>(
+    `/v1/conversations/sessions?${params.toString()}`,
+  );
+}
+
+export async function listConversationMessages(
+  sessionId: string,
+  workspaceId: string,
+  projectId: string,
+  userId: string,
+  limit = 300,
+): Promise<ConversationMessageSearchResponse> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    user_id: userId,
+    limit: String(limit),
+  });
+  return requestJson<ConversationMessageSearchResponse>(
+    `/v1/conversations/${encodeURIComponent(sessionId)}/messages?${params.toString()}`,
+  );
+}
+
+export async function sendConversationMessage(
+  sessionId: string,
+  payload: ConversationSendRequest,
+): Promise<ConversationSendResponse> {
+  return requestJson<ConversationSendResponse>(
+    `/v1/conversations/${encodeURIComponent(sessionId)}/send`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function getKnowledgeTree(): Promise<KnowledgeTreeResponse> {
+  return requestJson<KnowledgeTreeResponse>("/v1/knowledge/tree");
+}
+
+export async function getWorkspaceFile(
+  path: string,
+  maxChars = 20000,
+): Promise<WorkspaceFileContentResponse> {
+  const params = new URLSearchParams({
+    path,
+    max_chars: String(maxChars),
+  });
+  return requestJson<WorkspaceFileContentResponse>(`/v1/workspace/file?${params.toString()}`);
+}
+
+export async function getProjectArtifactsTree(
+  workspaceId: string,
+  projectId: string,
+  limit = 5000,
+): Promise<ProjectArtifactsTreeResponse> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    limit: String(limit),
+  });
+  return requestJson<ProjectArtifactsTreeResponse>(
+    `/v1/project/artifacts/tree?${params.toString()}`,
+  );
+}
+
+export async function getProjectArtifactFile(
+  workspaceId: string,
+  projectId: string,
+  path: string,
+  maxChars = 50000,
+): Promise<ProjectArtifactFileContentResponse> {
+  const params = new URLSearchParams({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    path,
+    max_chars: String(maxChars),
+  });
+  return requestJson<ProjectArtifactFileContentResponse>(
+    `/v1/project/artifacts/file?${params.toString()}`,
+  );
+}
+
+export async function runProjectIngestion(payload: {
+  workspace_id: string;
+  project_path: string;
+  force?: boolean;
+}): Promise<ProjectIngestionReport> {
+  return requestJson<ProjectIngestionReport>("/v1/ingestion/run", {
+    method: "POST",
+    body: JSON.stringify({
+      workspace_id: payload.workspace_id,
+      project_path: payload.project_path,
+      force: payload.force ?? false,
+    }),
   });
 }
 

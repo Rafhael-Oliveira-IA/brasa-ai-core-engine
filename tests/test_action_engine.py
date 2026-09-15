@@ -186,6 +186,46 @@ class StubLootItemsContextBuilder:
         return packet, retrieval
 
 
+class StubLootScriptsOnlyContextBuilder:
+    def build(self, envelope):
+        packet = ContextPacket(
+            provenance=[
+                "artifact:file:data/scripts/pokeprey/pokeprey_base.lua",
+                "artifact:file:data/creaturescripts/scripts/basestone_drops.lua",
+                "artifact:file:data/actions/scripts/poke/catch.lua",
+            ]
+        )
+        retrieval = RetrievalResult(
+            query=envelope.prompt,
+            entries=[],
+            took_ms=5,
+            assembled={
+                "user_intent": "general-query",
+                "relevant_systems": ["data/creaturescripts", "data/scripts"],
+                "dependencies": ["onKill", "onDropLoot"],
+                "risks": ["item_context_missing"],
+                "context_packet": [
+                    {
+                        "source": "artifact:file:data/scripts/pokeprey/pokeprey_base.lua",
+                        "type": "artifact",
+                        "score": 0.88,
+                    },
+                    {
+                        "source": "artifact:file:data/creaturescripts/scripts/basestone_drops.lua",
+                        "type": "artifact",
+                        "score": 0.86,
+                    },
+                    {
+                        "source": "artifact:file:data/actions/scripts/poke/catch.lua",
+                        "type": "artifact",
+                        "score": 0.84,
+                    },
+                ],
+            },
+        )
+        return packet, retrieval
+
+
 class StubModelAssistRouter:
     def __init__(self) -> None:
         self.calls = 0
@@ -276,6 +316,44 @@ class StubModelAssistRouterWithNonMatchingPatch:
             reason="model-assisted planning",
             escalation_depth=0,
             estimated_cost_usd=0.004,
+        )
+        return response, decision
+
+
+class StubModelAssistRouterWithEmptyLootPatch:
+    async def generate(self, *, envelope, context):
+        payload = {
+            "summary": "Adiciona fire stone ao drop do Arcanine",
+            "warnings": ["generated_by_alibaba"],
+            "actions": [
+                {
+                    "type": "patch_file",
+                    "target": "data/actions/scripts/poke/catch.lua",
+                    "intent": "Adicionar fire stone ao drop do Arcanine",
+                    "risk": "medium",
+                    "rationale": "modelo inferiu alvo incorreto",
+                    "patches": [],
+                    "content": None,
+                }
+            ],
+        }
+        response = ProviderResponse(
+            answer=json.dumps(payload, ensure_ascii=True),
+            confidence=0.88,
+            provider="alibaba",
+            model_name="qwen-plus-latest",
+            prompt_tokens=180,
+            completion_tokens=160,
+            total_tokens=340,
+            cost_usd=0.006,
+        )
+        decision = RouteDecision(
+            selected_tier=ModelTier.PLUS,
+            provider="alibaba",
+            model_name="qwen-plus-latest",
+            reason="model-assisted planning",
+            escalation_depth=1,
+            estimated_cost_usd=0.006,
         )
         return response, decision
 
@@ -653,6 +731,80 @@ def test_action_planner_loot_drop_falls_back_to_items_xml_when_monster_missing_e
         updated_items = items_file.read_text(encoding="utf-8")
         assert "heart stone" in updated_items
         assert "fire stone" in updated_items
+        unchanged_catch = catch_file.read_text(encoding="utf-8")
+        assert "fire stone" not in unchanged_catch
+
+
+def test_action_planner_repairs_empty_model_loot_patch_and_avoids_missing_mutation() -> None:
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        pokeprey_file = root / "data" / "scripts" / "pokeprey" / "pokeprey_base.lua"
+        basestone_file = root / "data" / "creaturescripts" / "scripts" / "basestone_drops.lua"
+        catch_file = root / "data" / "actions" / "scripts" / "poke" / "catch.lua"
+
+        pokeprey_file.parent.mkdir(parents=True, exist_ok=True)
+        basestone_file.parent.mkdir(parents=True, exist_ok=True)
+        catch_file.parent.mkdir(parents=True, exist_ok=True)
+
+        pokeprey_file.write_text("function onKill(player, target)\n    return true\nend\n", encoding="utf-8")
+        basestone_file.write_text(
+            (
+                "function onKill(player, target)\n"
+                "    local drops = {\n"
+                "        {name = \"heart stone\", chance = 4500},\n"
+                "    }\n"
+                "    return true\n"
+                "end\n"
+            ),
+            encoding="utf-8",
+        )
+        catch_file.write_text("function onCatch(player, ball)\n    return true\nend\n", encoding="utf-8")
+
+        repository = MemoryRepository(root / "memory.db")
+        engine = CognitiveActionEngine(
+            context_builder=StubLootScriptsOnlyContextBuilder(),
+            memory_repository=repository,
+            workspace_root=root,
+            backup_root=root / ".backups",
+            blocked_path_prefixes=(".git", ".brasa"),
+            allow_delete=False,
+            max_file_bytes=200000,
+            router=StubModelAssistRouterWithEmptyLootPatch(),
+            model_assist_enabled=True,
+            model_assist_tier="plus",
+        )
+
+        plan, _ = engine.plan(
+            ActionPlanRequest(
+                project_id="MMO",
+                user_id="u1",
+                prompt="o drop do arcanine esta com heart stone, precisamos adicionar fire stone",
+            )
+        )
+
+        assert len(plan.actions) == 1
+        action = plan.actions[0]
+        assert action.target == "data/creaturescripts/scripts/basestone_drops.lua"
+        assert action.type == ActionType.PATCH_FILE
+        assert action.patches
+
+        report = engine.execute(
+            ActionExecuteRequest(
+                project_id="MMO",
+                user_id="u1",
+                plan=plan,
+                options=ActionExecutionOptions(dry_run=False, allow_high_risk=True),
+            )
+        )
+
+        assert report.failed == 0
+        assert report.applied == 1
+        assert report.validation.ok is True
+        assert not any(issue.code == "missing_mutation" for issue in report.validation.issues)
+
+        updated_basestone = basestone_file.read_text(encoding="utf-8")
+        assert "heart stone" in updated_basestone
+        assert "fire stone" in updated_basestone
         unchanged_catch = catch_file.read_text(encoding="utf-8")
         assert "fire stone" not in unchanged_catch
 

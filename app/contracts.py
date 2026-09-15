@@ -400,6 +400,111 @@ class TaskResponse(BaseModel):
     retrieval: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConversationMessageRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class ConversationSession(BaseModel):
+    session_id: str = Field(default_factory=lambda: str(uuid4()))
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    title: str = "New Conversation"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    archived: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    last_message_at: datetime | None = None
+
+
+class ConversationSessionCreateRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    title: str = "New Conversation"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationSessionSearchResponse(BaseModel):
+    items: list[ConversationSession]
+
+
+class ConversationMessage(BaseModel):
+    message_id: str = Field(default_factory=lambda: str(uuid4()))
+    session_id: str
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    role: ConversationMessageRole = ConversationMessageRole.USER
+    content: str = Field(min_length=1)
+    request_id: str | None = None
+    trace_id: str | None = None
+    route: RouteDecision | None = None
+    context_sources: list[str] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ConversationSendRequest(BaseModel):
+    workspace_id: str = "brasa_ai_workspace"
+    project_id: str
+    user_id: str
+    prompt: str = Field(min_length=1)
+    command: str = "chat"
+    options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationMessageSearchResponse(BaseModel):
+    items: list[ConversationMessage]
+
+
+class ConversationSendResponse(BaseModel):
+    session: ConversationSession
+    user_message: ConversationMessage
+    assistant_message: ConversationMessage
+    task: TaskResponse | None = None
+    operation: str = "chat"
+    operation_result: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceFileContentResponse(BaseModel):
+    path: str
+    exists: bool = True
+    content: str = ""
+    truncated: bool = False
+    size_bytes: int = 0
+    encoding: str = "utf-8"
+
+
+class ProjectArtifactsTreeResponse(BaseModel):
+    workspace_id: str
+    project_id: str
+    scoped_project_id: str
+    artifacts_root: str
+    ingested: bool = False
+    source_project_path: str | None = None
+    file_count: int = 0
+    files: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ProjectArtifactFileContentResponse(BaseModel):
+    workspace_id: str
+    project_id: str
+    scoped_project_id: str
+    path: str
+    exists: bool = True
+    content: str = ""
+    truncated: bool = False
+    size_bytes: int = 0
+    encoding: str = "utf-8"
+    source: str = "project_source"
+
+
 class EvaluationRunRequest(BaseModel):
     limit: int = Field(default=300, ge=20, le=5000)
     workspace_id: str | None = None
